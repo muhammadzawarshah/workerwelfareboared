@@ -1,0 +1,421 @@
+{
+  "info": {
+    "name": "Worker Welfare Board API - Complete QA",
+    "_postman_id": "fb88a91e-9ef5-4f2c-9f86-worker-welfare-board",
+    "description": "Complete API collection for Worker Welfare Board / Labour Colony Management System. Run Login first, then setup/master data, worker application flow, rent, utilities, complaints, caretaker GPS/task proof, and generic CRUD smoke tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('Response is JSON', function () {",
+          "  pm.response.to.have.header('Content-Type');",
+          "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "});",
+          "pm.test('No server error', function () {",
+          "  pm.expect(pm.response.code).to.be.below(500);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000/api" },
+    { "key": "token", "value": "" },
+    { "key": "email", "value": "admin@example.com" },
+    { "key": "password", "value": "secret123" },
+    { "key": "workerId", "value": "1" },
+    { "key": "applicationId", "value": "1" },
+    { "key": "colonyId", "value": "1" },
+    { "key": "flatId", "value": "1" },
+    { "key": "assignmentId", "value": "1" },
+    { "key": "rentInvoiceId", "value": "1" },
+    { "key": "utilityBillId", "value": "1" },
+    { "key": "complaintId", "value": "1" },
+    { "key": "caretakerId", "value": "1" },
+    { "key": "attendanceId", "value": "1" },
+    { "key": "taskId", "value": "1" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register caretaker",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "auth": { "type": "noauth" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test Caretaker\",\n  \"email\": \"caretaker{{$timestamp}}@example.com\",\n  \"password\": \"secret123\",\n  \"phone_number\": \"03001234567\"\n}"
+            },
+            "url": "{{baseUrl}}/auth/register"
+          }
+        },
+        {
+          "name": "Login and save token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Login succeeds', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "pm.expect(json.data.token).to.be.a('string');",
+                  "pm.collectionVariables.set('token', json.data.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "auth": { "type": "noauth" },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}" },
+            "url": "{{baseUrl}}/auth/login"
+          }
+        },
+        {
+          "name": "Profile requires bearer token",
+          "request": { "method": "GET", "url": "{{baseUrl}}/auth/profile" }
+        },
+        {
+          "name": "Create user by admin",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Finance User\",\n  \"email\": \"finance{{$timestamp}}@example.com\",\n  \"password\": \"secret123\",\n  \"phone_number\": \"03001234568\",\n  \"role\": \"finance_admin\"\n}"
+            },
+            "url": "{{baseUrl}}/auth/createUserByAdmin"
+          }
+        },
+        {
+          "name": "QA - Login wrong password returns 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["pm.test('Unauthorized', function () { pm.response.to.have.status(401); });"] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "auth": { "type": "noauth" },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"wrong-password\"\n}" },
+            "url": "{{baseUrl}}/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Master Data",
+      "item": [
+        {
+          "name": "Create industry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"QA Textile Mills\",\n  \"registration_no\": \"REG-{{$timestamp}}\",\n  \"address\": \"Industrial Estate\",\n  \"contact_person\": \"Mr QA\",\n  \"phone\": \"03001234569\",\n  \"email\": \"industry{{$timestamp}}@example.com\"\n}" },
+            "url": "{{baseUrl}}/industries"
+          }
+        },
+        {
+          "name": "Create colony",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('colonyId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Labour Colony QA {{$timestamp}}\",\n  \"address\": \"Main Road, QA City\"\n}" },
+            "url": "{{baseUrl}}/colonies"
+          }
+        },
+        {
+          "name": "Create residential unit",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('flatId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"flat_no\": \"A-{{$timestamp}}\",\n  \"flat_address\": \"Block A\",\n  \"flat_rooms\": 2,\n  \"colony_id\": {{colonyId}}\n}" },
+            "url": "{{baseUrl}}/residential-units"
+          }
+        },
+        {
+          "name": "Create rent rate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"colony_id\": {{colonyId}},\n  \"unit_type\": \"2\",\n  \"amount\": \"5000\",\n  \"effective_from\": \"2026-01-01\"\n}" },
+            "url": "{{baseUrl}}/rent-rates"
+          }
+        },
+        {
+          "name": "Create document type",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"CNIC Front\",\n  \"code\": \"CNIC_FRONT_{{$timestamp}}\",\n  \"module\": \"worker_application\",\n  \"is_required\": true,\n  \"allowed_file_type\": \"pdf,jpg,jpeg,png\",\n  \"max_file_size_mb\": 5\n}" },
+            "url": "{{baseUrl}}/document-types"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Worker Application Flow",
+      "item": [
+        {
+          "name": "Create worker",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('workerId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Ali Worker\",\n  \"father_name\": \"Ahmed\",\n  \"cnic\": \"35202{{$timestamp}}\",\n  \"dob\": \"1990-01-01\",\n  \"address\": \"Worker address\",\n  \"designation\": \"Machine Operator\",\n  \"salary_per_month\": \"45000\",\n  \"mobile_no_1\": \"03001234567\",\n  \"worker_type\": \"industry\",\n  \"status\": \"pending\"\n}" },
+            "url": "{{baseUrl}}/workers"
+          }
+        },
+        {
+          "name": "Search worker by CNIC/name",
+          "request": { "method": "GET", "url": "{{baseUrl}}/workers/search?q=Ali" }
+        },
+        {
+          "name": "Create worker application",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('applicationId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"application_no\": \"APP-{{$timestamp}}\",\n  \"application_type\": \"new_allotment\",\n  \"worker_id\": {{workerId}},\n  \"requested_colony_id\": {{colonyId}},\n  \"requested_unit_type\": \"2\",\n  \"status\": \"draft\"\n}" },
+            "url": "{{baseUrl}}/worker-applications"
+          }
+        },
+        { "name": "Submit application", "request": { "method": "POST", "url": "{{baseUrl}}/worker-applications/{{applicationId}}/submit" } },
+        {
+          "name": "Verify application passed",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"verification_status\": \"passed\",\n  \"verification_remarks\": \"Documents and worker details verified\"\n}" },
+            "url": "{{baseUrl}}/worker-applications/{{applicationId}}/verify"
+          }
+        },
+        {
+          "name": "Committee approve",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"committee_decision\": \"approved\",\n  \"committee_remarks\": \"Eligible for allotment\"\n}" },
+            "url": "{{baseUrl}}/worker-applications/{{applicationId}}/committee-decision"
+          }
+        },
+        {
+          "name": "Final approve application",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Approved by authority\"\n}" },
+            "url": "{{baseUrl}}/worker-applications/{{applicationId}}/approve"
+          }
+        },
+        {
+          "name": "Assign flat",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('assignmentId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"worker_id\": {{workerId}},\n  \"flat_id\": {{flatId}},\n  \"application_id\": {{applicationId}},\n  \"start_date\": \"2026-05-01\",\n  \"allotment_order_no\": \"ORDER-{{$timestamp}}\",\n  \"allotment_order_date\": \"2026-05-01\"\n}" },
+            "url": "{{baseUrl}}/flat-assignments/assign"
+          }
+        },
+        {
+          "name": "QA - Duplicate active assignment should fail",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Duplicate active flat/worker blocked', function () { pm.expect([400,409,500]).to.include(pm.response.code); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"worker_id\": {{workerId}},\n  \"flat_id\": {{flatId}},\n  \"application_id\": {{applicationId}},\n  \"start_date\": \"2026-05-01\"\n}" },
+            "url": "{{baseUrl}}/flat-assignments/assign"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rent and Utilities",
+      "item": [
+        {
+          "name": "Generate monthly rent invoices",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"billing_month\": \"2026-05-01\",\n  \"due_date\": \"2026-05-10\"\n}" },
+            "url": "{{baseUrl}}/rent-invoices/generate"
+          }
+        },
+        { "name": "List rent invoices", "request": { "method": "GET", "url": "{{baseUrl}}/rent-invoices?limit=10" } },
+        {
+          "name": "Pay rent invoice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"amount\": \"5000\",\n  \"payment_date\": \"2026-05-09\",\n  \"payment_method\": \"cash\",\n  \"receipt_no\": \"RNT-{{$timestamp}}\"\n}" },
+            "url": "{{baseUrl}}/rent-invoices/{{rentInvoiceId}}/pay"
+          }
+        },
+        {
+          "name": "Create utility connection",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"flat_id\": {{flatId}},\n  \"utility_type\": \"electricity\",\n  \"provider_name\": \"LESCO\",\n  \"consumer_number\": \"LESCO-{{$timestamp}}\"\n}" },
+            "url": "{{baseUrl}}/utility-connections"
+          }
+        },
+        {
+          "name": "Create utility bill",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('utilityBillId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"flat_assignment_id\": {{assignmentId}},\n  \"worker_id\": {{workerId}},\n  \"flat_id\": {{flatId}},\n  \"utility_type\": \"electricity\",\n  \"billing_month\": \"2026-05-01\",\n  \"amount\": \"3200\",\n  \"due_date\": \"2026-05-15\"\n}" },
+            "url": "{{baseUrl}}/utility-bills"
+          }
+        },
+        {
+          "name": "Pay utility bill",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"amount\": \"3200\",\n  \"payment_date\": \"2026-05-12\",\n  \"receipt_no\": \"UTL-{{$timestamp}}\"\n}" },
+            "url": "{{baseUrl}}/utility-bills/{{utilityBillId}}/pay"
+          }
+        },
+        {
+          "name": "Log utility bill fetch attempt",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"utility_connection_id\": 1,\n  \"billing_month\": \"2026-05-01\",\n  \"status\": \"not_generated\",\n  \"api_response_code\": \"404\",\n  \"error_message\": \"Bill not generated yet\"\n}" },
+            "url": "{{baseUrl}}/utility-fetch-attempts/log"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Complaints Assets Caretaker",
+      "item": [
+        {
+          "name": "Create complaint",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('complaintId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"worker_id\": {{workerId}},\n  \"colony_id\": {{colonyId}},\n  \"flat_id\": {{flatId}},\n  \"complaint_desc\": \"Water leakage in kitchen\"\n}" },
+            "url": "{{baseUrl}}/complaints"
+          }
+        },
+        {
+          "name": "Assign complaint to caretaker and create task",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"assigned_caretaker_id\": {{caretakerId}},\n  \"task_title\": \"Fix leakage\",\n  \"due_at\": \"2026-05-31T12:00:00.000Z\"\n}" },
+            "url": "{{baseUrl}}/complaints/{{complaintId}}/assign"
+          }
+        },
+        {
+          "name": "Create asset",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Water Pump\",\n  \"address\": \"Block A\",\n  \"category\": \"maintenance\",\n  \"colony_id\": {{colonyId}}\n}" },
+            "url": "{{baseUrl}}/assets"
+          }
+        },
+        {
+          "name": "Caretaker attendance login",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const json = pm.response.json();", "if (json.data && json.data.id) pm.collectionVariables.set('attendanceId', json.data.id);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"user_id\": {{caretakerId}},\n  \"duty_date\": \"2026-05-30\",\n  \"login_latitude\": \"31.5204000\",\n  \"login_longitude\": \"74.3587000\"\n}" },
+            "url": "{{baseUrl}}/caretaker-attendance/login"
+          }
+        },
+        {
+          "name": "Caretaker GPS ping",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"user_id\": {{caretakerId}},\n  \"attendance_id\": {{attendanceId}},\n  \"latitude\": \"31.5205000\",\n  \"longitude\": \"74.3588000\",\n  \"accuracy\": \"12.50\",\n  \"battery_level\": 87,\n  \"is_mock_location\": false\n}" },
+            "url": "{{baseUrl}}/caretaker-gps/ping"
+          }
+        },
+        {
+          "name": "Upload task proof with GPS radius check",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"latitude\": \"31.5205000\",\n  \"longitude\": \"74.3588000\",\n  \"accuracy\": \"10.00\",\n  \"remarks\": \"Work completed with image proof\"\n}" },
+            "url": "{{baseUrl}}/caretaker-tasks/{{taskId}}/proofs"
+          }
+        },
+        {
+          "name": "Caretaker attendance logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"logout_latitude\": \"31.5206000\",\n  \"logout_longitude\": \"74.3589000\"\n}" },
+            "url": "{{baseUrl}}/caretaker-attendance/{{attendanceId}}/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Generic CRUD Smoke",
+      "item": [
+        { "name": "List users", "request": { "method": "GET", "url": "{{baseUrl}}/users?limit=10" } },
+        { "name": "List industries", "request": { "method": "GET", "url": "{{baseUrl}}/industries?limit=10" } },
+        { "name": "List colonies", "request": { "method": "GET", "url": "{{baseUrl}}/colonies?limit=10" } },
+        { "name": "List residential units", "request": { "method": "GET", "url": "{{baseUrl}}/residential-units?limit=10" } },
+        { "name": "List workers", "request": { "method": "GET", "url": "{{baseUrl}}/workers?limit=10" } },
+        { "name": "List worker applications", "request": { "method": "GET", "url": "{{baseUrl}}/worker-applications?limit=10" } },
+        { "name": "List documents", "request": { "method": "GET", "url": "{{baseUrl}}/documents?limit=10" } },
+        { "name": "List flat assignments", "request": { "method": "GET", "url": "{{baseUrl}}/flat-assignments?limit=10" } },
+        { "name": "List rent payments", "request": { "method": "GET", "url": "{{baseUrl}}/rent-payments?limit=10" } },
+        { "name": "List utility connections", "request": { "method": "GET", "url": "{{baseUrl}}/utility-connections?limit=10" } },
+        { "name": "List complaints", "request": { "method": "GET", "url": "{{baseUrl}}/complaints?limit=10" } },
+        { "name": "List assets", "request": { "method": "GET", "url": "{{baseUrl}}/assets?limit=10" } },
+        { "name": "List caretaker tasks", "request": { "method": "GET", "url": "{{baseUrl}}/caretaker-tasks?limit=10" } },
+        { "name": "List notifications", "request": { "method": "GET", "url": "{{baseUrl}}/notifications?limit=10" } },
+        { "name": "List audit logs", "request": { "method": "GET", "url": "{{baseUrl}}/audit-logs?limit=10" } },
+        {
+          "name": "QA - Unknown resource rejected",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Bad request', function () { pm.response.to.have.status(400); });"] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/unknown-resource" }
+        },
+        {
+          "name": "QA - Invalid id rejected",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Bad request', function () { pm.response.to.have.status(400); });"] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/workers/not-a-number" }
+        },
+        {
+          "name": "QA - No token returns 401",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Unauthorized', function () { pm.response.to.have.status(401); });"] } }],
+          "request": {
+            "method": "GET",
+            "auth": { "type": "noauth" },
+            "url": "{{baseUrl}}/workers"
+          }
+        }
+      ]
+    }
+  ]
+}

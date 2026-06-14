@@ -1,0 +1,31 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env.*
+!.env.example
+
+/generated/prisma
+backend/generated/prisma/
+
+# Build output and local runtime files
+dist
+.next
+build
+.dart_tool
+.gradle
+.gradle-user-home
+.idea
+uploads
+coverage
+
+# Flutter generated local files
+worker_walfare_board/ios/Flutter/Generated.xcconfig
+worker_walfare_board/ios/Flutter/flutter_export_environment.sh
+worker_walfare_board/ios/Flutter/ephemeral/
+worker_walfare_board/macos/Flutter/ephemeral/
+worker_walfare_board/windows/flutter/ephemeral/
+worker_walfare_board/linux/flutter/ephemeral/
+
+# Local notes / credential dumps
+*db details*.txt
+*.bak

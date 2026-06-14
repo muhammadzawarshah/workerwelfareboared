@@ -1,0 +1,945 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model asset_status_history {
+  id                Int          @id @default(autoincrement())
+  asset_id          Int
+  status            asset_status @default(ok)
+  repaired_image_id Int?
+  created_at        DateTime?    @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?    @default(now()) @db.Timestamp(6)
+  assets            assets       @relation(fields: [asset_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  documents         documents?   @relation(fields: [repaired_image_id], references: [id], onUpdate: NoAction)
+}
+
+model assets {
+  id                   Int                    @id @default(autoincrement())
+  name                 String                 @db.VarChar(255)
+  address              String?                @db.VarChar(500)
+  latitude             Decimal?               @db.Decimal(10, 7)
+  longitude            Decimal?               @db.Decimal(10, 7)
+  category             String?                @db.VarChar(255)
+  colony_id            Int?
+  created_at           DateTime?              @default(now()) @db.Timestamp(6)
+  updated_at           DateTime?              @default(now()) @db.Timestamp(6)
+  asset_status_history asset_status_history[]
+  colonies             colonies?              @relation(fields: [colony_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caretaker_tasks      caretaker_tasks[]
+}
+
+model audit_logs {
+  id          Int       @id @default(autoincrement())
+  user_id     Int?
+  action      String    @db.VarChar(255)
+  entity_type String    @db.VarChar(100)
+  entity_id   Int?
+  old_values  Json?
+  new_values  Json?
+  ip_address  String?   @db.VarChar(100)
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  users       users?    @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+}
+
+model caretaker_attendance {
+  id                     Int                      @id @default(autoincrement())
+  user_id                Int
+  duty_date              DateTime                 @db.Date
+  login_time             DateTime                 @default(now()) @db.Timestamp(6)
+  login_latitude         Decimal?                 @db.Decimal(10, 7)
+  login_longitude        Decimal?                 @db.Decimal(10, 7)
+  logout_time            DateTime?                @db.Timestamp(6)
+  logout_latitude        Decimal?                 @db.Decimal(10, 7)
+  logout_longitude       Decimal?                 @db.Decimal(10, 7)
+  status                 attendance_status        @default(active)
+  created_at             DateTime?                @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?                @default(now()) @db.Timestamp(6)
+  users                  users                    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caretaker_gps_tracking caretaker_gps_tracking[]
+}
+
+model caretaker_gps_tracking {
+  id                   Int                   @id @default(autoincrement())
+  user_id              Int
+  attendance_id        Int?
+  latitude             Decimal               @db.Decimal(10, 7)
+  longitude            Decimal               @db.Decimal(10, 7)
+  accuracy             Decimal?              @db.Decimal(10, 2)
+  recorded_at          DateTime              @default(now()) @db.Timestamp(6)
+  battery_level        Int?
+  is_mock_location     Boolean?              @default(false)
+  created_at           DateTime?             @default(now()) @db.Timestamp(6)
+  caretaker_attendance caretaker_attendance? @relation(fields: [attendance_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                users                 @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, recorded_at], map: "idx_caretaker_gps_user_recorded_at")
+}
+
+model caretaker_tasks {
+  id                                               Int                @id @default(autoincrement())
+  asset_id                                         Int?
+  complaint_id                                     Int?
+  flat_id                                          Int?
+  assigned_to_user_id                              Int?
+  assigned_by_user_id                              Int?
+  task_title                                       String             @db.VarChar(255)
+  task_description                                 String?
+  target_latitude                                  Decimal?           @db.Decimal(10, 7)
+  target_longitude                                 Decimal?           @db.Decimal(10, 7)
+  allowed_radius_meters                            Int?               @default(100)
+  status                                           task_status        @default(assigned)
+  assigned_at                                      DateTime?          @default(now()) @db.Timestamp(6)
+  due_at                                           DateTime?          @db.Timestamp(6)
+  created_at                                       DateTime?          @default(now()) @db.Timestamp(6)
+  updated_at                                       DateTime?          @default(now()) @db.Timestamp(6)
+  assets                                           assets?            @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  users_caretaker_tasks_assigned_by_user_idTousers users?             @relation("caretaker_tasks_assigned_by_user_idTousers", fields: [assigned_by_user_id], references: [id], onUpdate: NoAction)
+  users_caretaker_tasks_assigned_to_user_idTousers users?             @relation("caretaker_tasks_assigned_to_user_idTousers", fields: [assigned_to_user_id], references: [id], onUpdate: NoAction)
+  complaints                                       complaints?        @relation(fields: [complaint_id], references: [id], onUpdate: NoAction)
+  residential_units                                residential_units? @relation(fields: [flat_id], references: [id], onUpdate: NoAction)
+  task_proofs                                      task_proofs[]
+}
+
+model districts {
+  id         Int        @id @default(autoincrement())
+  name       String     @db.VarChar(255)
+  created_at DateTime?  @default(now()) @db.Timestamp(6)
+  updated_at DateTime?  @default(now()) @db.Timestamp(6)
+  colonies   colonies[]
+}
+
+model colonies {
+  id                  Int                   @id @default(autoincrement())
+  name                String                @db.VarChar(255)
+  address             String                @db.VarChar(500)
+  latitude            Decimal?              @db.Decimal(10, 7)
+  longitude           Decimal?              @db.Decimal(10, 7)
+  district_id         Int?
+  zone_id             Int?
+  created_by          Int?
+  created_at          DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamp(6)
+  assets              assets[]
+  caretaker_colonies  caretaker_colonies[]
+  districts           districts?            @relation(fields: [district_id], references: [id], onUpdate: NoAction)
+  zones               zones?                @relation(fields: [zone_id], references: [id], onUpdate: NoAction)
+  users               users?                @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  complaints          complaints[]
+  eviction_cases      eviction_cases[]
+  rent_rates          rent_rates[]
+  residential_units   residential_units[]
+  worker_applications worker_applications[]
+}
+
+// Operational zones (dynamic). Each zone is managed by an Assistant Director (Colonies)
+// referenced by `ad_user_id`. Colonies belong to a zone via `colonies.zone_id`.
+model zones {
+  id         Int        @id @default(autoincrement())
+  name       String     @db.VarChar(255)
+  ad_user_id Int?
+  created_at DateTime?  @default(now()) @db.Timestamp(6)
+  updated_at DateTime?  @default(now()) @db.Timestamp(6)
+  users      users?     @relation(fields: [ad_user_id], references: [id], onUpdate: NoAction)
+  colonies   colonies[]
+}
+
+model complaint_budgets {
+  id           Int        @id @default(autoincrement())
+  complaint_id Int
+  budget       BigInt     @default(0)
+  document_id  Int?
+  created_at   DateTime?  @default(now()) @db.Timestamp(6)
+  updated_at   DateTime?  @default(now()) @db.Timestamp(6)
+  complaints   complaints @relation(fields: [complaint_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  documents    documents? @relation(fields: [document_id], references: [id], onUpdate: NoAction)
+}
+
+model complaints {
+  id                       Int                 @id @default(autoincrement())
+  worker_id                Int?
+  colony_id                Int?
+  flat_id                  Int?
+  complaint_desc           String
+  complaint_type           String?             @db.VarChar(50)
+  latitude                 Decimal?            @db.Decimal(10, 7)
+  longitude                Decimal?            @db.Decimal(10, 7)
+  allowed_radius_meters    Int?                @default(100)
+  assigned_caretaker_id    Int?
+  status                   complaint_status    @default(open)
+  resolved_image_id        Int?
+  resolved_latitude        Decimal?            @db.Decimal(10, 7)
+  resolved_longitude       Decimal?            @db.Decimal(10, 7)
+  resolved_distance_meters Decimal?            @db.Decimal(10, 2)
+  resolved_by              Int?
+  resolved_at              DateTime?           @db.Timestamp(6)
+  resolution_remarks       String?             @db.VarChar(500)
+  created_at               DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at               DateTime?           @default(now()) @db.Timestamp(6)
+  caretaker_tasks       caretaker_tasks[]
+  complaint_budgets     complaint_budgets[]
+  users                 users?              @relation(fields: [assigned_caretaker_id], references: [id], onUpdate: NoAction)
+  colonies              colonies?           @relation(fields: [colony_id], references: [id], onUpdate: NoAction)
+  residential_units     residential_units?  @relation(fields: [flat_id], references: [id], onUpdate: NoAction)
+  workers               workers?            @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+
+  @@index([status], map: "idx_complaints_status")
+}
+
+model document_types {
+  id                 Int                 @id @default(autoincrement())
+  name               String              @db.VarChar(255)
+  code               String              @unique @db.VarChar(255)
+  module             String              @db.VarChar(100)
+  is_required        Boolean             @default(false)
+  allowed_file_type  String              @default("pdf,jpg,jpeg,png") @db.VarChar(255)
+  max_file_size_mb   Int                 @default(5)
+  description        String?             @db.VarChar(500)
+  is_active          Boolean             @default(true)
+  default_visibility document_visibility @default(management_only)
+  created_at         DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?           @default(now()) @db.Timestamp(6)
+  documents          documents[]
+}
+
+model eviction_cases {
+  id                     Int                  @id @default(autoincrement())
+  worker_id              Int?
+  colony_id              Int?
+  flat_id                Int?
+  occupant_name          String               @db.VarChar(255)
+  occupant_cnic          String?              @db.VarChar(30)
+  occupant_phone         String?              @db.VarChar(30)
+  illegal_reason         String?
+  case_no                String?              @db.VarChar(100)
+  court_name             String?              @db.VarChar(255)
+  police_station         String?              @db.VarChar(255)
+  administration_contact String?              @db.VarChar(255)
+  filed_date             DateTime?            @db.Date
+  next_hearing_date      DateTime?            @db.Date
+  decision_summary       String?
+  status                 eviction_status      @default(illegal_identified)
+  vacant_date            DateTime?            @db.Date
+  remarks                String?              @db.VarChar(500)
+  created_by             Int?
+  created_at             DateTime?            @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?            @default(now()) @db.Timestamp(6)
+  colonies               colonies?            @relation(fields: [colony_id], references: [id], onUpdate: NoAction)
+  residential_units      residential_units?   @relation(fields: [flat_id], references: [id], onUpdate: NoAction)
+  workers                workers?             @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+  users                  users?               @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  eviction_hearings      eviction_hearings[]
+
+  @@index([status], map: "idx_eviction_cases_status")
+  @@index([flat_id], map: "idx_eviction_cases_flat_id")
+}
+
+model eviction_hearings {
+  id                 Int            @id @default(autoincrement())
+  eviction_case_id   Int
+  hearing_date       DateTime       @db.Date
+  next_hearing_date  DateTime?      @db.Date
+  proceedings        String?
+  decision_summary   String?
+  document_id        Int?
+  created_by         Int?
+  created_at         DateTime?      @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?      @default(now()) @db.Timestamp(6)
+  eviction_cases     eviction_cases @relation(fields: [eviction_case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  documents          documents?     @relation(fields: [document_id], references: [id], onUpdate: NoAction)
+  users              users?         @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([eviction_case_id], map: "idx_eviction_hearings_case_id")
+}
+
+model documents {
+  id                                 Int                    @id @default(autoincrement())
+  document_type_id                   Int
+  owner_type                         document_owner         @default(worker)
+  owner_id                           Int?
+  application_id                     Int?
+  file_path                          String                 @db.VarChar(700)
+  original_file_name                 String                 @db.VarChar(255)
+  mime_type                          String                 @db.VarChar(255)
+  file_size                          BigInt?
+  status                             document_status        @default(pending)
+  visibility                         document_visibility    @default(management_only)
+  uploaded_by                        Int?
+  uploaded_at                        DateTime?              @default(now()) @db.Timestamp(6)
+  verified_by                        Int?
+  verified_at                        DateTime?              @db.Timestamp(6)
+  rejection_reason                   String?                @db.VarChar(500)
+  remarks                            String?                @db.VarChar(500)
+  created_at                         DateTime?              @default(now()) @db.Timestamp(6)
+  updated_at                         DateTime?              @default(now()) @db.Timestamp(6)
+  asset_status_history               asset_status_history[]
+  complaint_budgets                  complaint_budgets[]
+  worker_applications                worker_applications?   @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  document_types                     document_types         @relation(fields: [document_type_id], references: [id], onUpdate: NoAction)
+  users_documents_uploaded_byTousers users?                 @relation("documents_uploaded_byTousers", fields: [uploaded_by], references: [id], onUpdate: NoAction)
+  users_documents_verified_byTousers users?                 @relation("documents_verified_byTousers", fields: [verified_by], references: [id], onUpdate: NoAction)
+  task_proofs                        task_proofs[]
+  eviction_hearings                  eviction_hearings[]
+
+  @@index([application_id], map: "idx_documents_application_id")
+  @@index([owner_type, owner_id], map: "idx_documents_owner")
+}
+
+model flat_assignments {
+  id                                                                                   Int                   @id @default(autoincrement())
+  worker_id                                                                            Int                   @unique(map: "unique_active_worker_assignment", where: raw("(status = 'active'::assignment_status)"))
+  flat_id                                                                              Int                   @unique(map: "unique_active_flat_assignment", where: raw("(status = 'active'::assignment_status)"))
+  application_id                                                                       Int?
+  start_date                                                                           DateTime              @db.Date
+  end_date                                                                             DateTime?             @db.Date
+  status                                                                               assignment_status     @default(active)
+  allotment_order_no                                                                   String?               @db.VarChar(255)
+  allotment_order_date                                                                 DateTime?             @db.Date
+  rent_amount                                                                          BigInt                @default(0)
+  vacated_reason                                                                       String?               @db.VarChar(500)
+  remarks                                                                              String?               @db.VarChar(500)
+  created_by                                                                           Int?
+  created_at                                                                           DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at                                                                           DateTime?             @default(now()) @db.Timestamp(6)
+  worker_applications_flat_assignments_application_idToworker_applications             worker_applications?  @relation("flat_assignments_application_idToworker_applications", fields: [application_id], references: [id], onUpdate: NoAction)
+  users                                                                                users?                @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  residential_units                                                                    residential_units     @relation(fields: [flat_id], references: [id], onUpdate: NoAction)
+  workers                                                                              workers               @relation(fields: [worker_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  rent_invoices                                                                        rent_invoices[]
+  utility_bills                                                                        utility_bills[]
+  worker_applications_worker_applications_current_flat_assignment_idToflat_assignments worker_applications[] @relation("worker_applications_current_flat_assignment_idToflat_assignments")
+
+  @@index([flat_id], map: "idx_flat_assignments_flat_id")
+  @@index([worker_id], map: "idx_flat_assignments_worker_id")
+}
+
+model industries {
+  id                  Int                   @id @default(autoincrement())
+  name                String                @db.VarChar(255)
+  registration_no     String?               @unique @db.VarChar(100)
+  address             String?               @db.VarChar(500)
+  latitude            Decimal?              @db.Decimal(10, 7)
+  longitude           Decimal?              @db.Decimal(10, 7)
+  contact_person      String?               @db.VarChar(255)
+  phone               String?               @db.VarChar(30)
+  email               String?               @db.VarChar(255)
+  status              user_status           @default(active)
+  created_by          Int?
+  created_at          DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamp(6)
+  users               users?                @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  industry_users      industry_users[]
+  worker_applications worker_applications[]
+}
+
+model industry_users {
+  id          Int        @id @default(autoincrement())
+  industry_id Int
+  user_id     Int
+  designation String?    @db.VarChar(255)
+  is_primary  Boolean?   @default(false)
+  created_at  DateTime?  @default(now()) @db.Timestamp(6)
+  industries  industries @relation(fields: [industry_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users       users      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([industry_id, user_id])
+}
+
+model late_fee_rules {
+  id             Int             @id @default(autoincrement())
+  name           String          @db.VarChar(255)
+  fee_type       late_fee_type   @default(per_day)
+  amount         BigInt
+  grace_days     Int             @default(0)
+  max_fee_amount BigInt?
+  effective_from DateTime        @db.Date
+  effective_to   DateTime?       @db.Date
+  is_active      Boolean         @default(true)
+  created_by     Int?
+  created_at     DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at     DateTime?       @default(now()) @db.Timestamp(6)
+  users          users?          @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  rent_invoices  rent_invoices[]
+}
+
+model notifications {
+  id                  Int                  @id @default(autoincrement())
+  recipient_type      recipient_type
+  recipient_id        Int
+  application_id      Int?
+  title               String               @db.VarChar(255)
+  message             String
+  notification_type   String?              @db.VarChar(100)
+  status              notification_status  @default(pending)
+  sent_at             DateTime?            @db.Timestamp(6)
+  read_at             DateTime?            @db.Timestamp(6)
+  created_at          DateTime?            @default(now()) @db.Timestamp(6)
+  worker_applications worker_applications? @relation(fields: [application_id], references: [id], onUpdate: NoAction)
+}
+
+model rent_invoices {
+  id                 Int                 @id @default(autoincrement())
+  flat_assignment_id Int
+  worker_id          Int
+  billing_month      DateTime            @db.Date
+  rent_rate_id       Int?
+  rent_amount        BigInt              @default(0)
+  due_date           DateTime            @db.Date
+  late_fee_rule_id   Int?
+  late_fee_amount    BigInt              @default(0)
+  total_amount       BigInt              @default(0)
+  paid_amount        BigInt              @default(0)
+  payment_mode       payment_mode        @default(manual)
+  deduction_status   deduction_status    @default(not_required)
+  status             rent_invoice_status @default(unpaid)
+  created_at         DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?           @default(now()) @db.Timestamp(6)
+  flat_assignments   flat_assignments    @relation(fields: [flat_assignment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  late_fee_rules     late_fee_rules?     @relation(fields: [late_fee_rule_id], references: [id], onUpdate: NoAction)
+  rent_rates         rent_rates?         @relation(fields: [rent_rate_id], references: [id], onUpdate: NoAction)
+  workers            workers             @relation(fields: [worker_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  rent_payments      rent_payments[]
+
+  @@unique([flat_assignment_id, billing_month])
+  @@index([billing_month], map: "idx_rent_invoices_billing_month")
+  @@index([worker_id], map: "idx_rent_invoices_worker_id")
+}
+
+model rent_payments {
+  id                Int               @id @default(autoincrement())
+  rent_invoice_id   Int
+  amount            BigInt
+  payment_date      DateTime          @db.Date
+  collected_user_id Int?
+  remittance_id     Int?
+  payment_method    String?           @db.VarChar(100)
+  receipt_no        String?           @db.VarChar(100)
+  remarks           String?           @db.VarChar(500)
+  created_at        DateTime?         @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?         @default(now()) @db.Timestamp(6)
+  users             users?            @relation(fields: [collected_user_id], references: [id], onUpdate: NoAction)
+  rent_invoices     rent_invoices     @relation(fields: [rent_invoice_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  rent_remittances  rent_remittances? @relation(fields: [remittance_id], references: [id], onUpdate: NoAction)
+}
+
+model caretaker_colonies {
+  id         Int       @id @default(autoincrement())
+  user_id    Int
+  colony_id  Int
+  is_active  Boolean   @default(true)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
+  colonies   colonies  @relation(fields: [colony_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, colony_id], map: "caretaker_colonies_user_colony_key")
+  @@index([colony_id], map: "idx_caretaker_colonies_colony")
+}
+
+model rent_remittances {
+  id                                              Int             @id @default(autoincrement())
+  caretaker_user_id                               Int
+  received_by_user_id                             Int?
+  total_amount                                    BigInt          @default(0)
+  payment_count                                   Int             @default(0)
+  status                                          String          @default("received") @db.VarChar(20)
+  remarks                                         String?         @db.VarChar(500)
+  received_at                                     DateTime?       @db.Timestamp(6)
+  created_at                                      DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at                                      DateTime?       @default(now()) @db.Timestamp(6)
+  rent_payments                                   rent_payments[]
+  users_rent_remittances_caretaker_user_idTousers users           @relation("rent_remittances_caretaker_user_idTousers", fields: [caretaker_user_id], references: [id], onUpdate: NoAction)
+  users_rent_remittances_received_by_user_idTousers users?        @relation("rent_remittances_received_by_user_idTousers", fields: [received_by_user_id], references: [id], onUpdate: NoAction)
+
+  @@index([caretaker_user_id], map: "idx_rent_remittances_caretaker")
+}
+
+model rent_rates {
+    id             Int             @id @default(autoincrement())
+    colony_id      Int?
+    flat_id        Int?
+    unit_type      String?         @db.VarChar(100)
+    amount         BigInt
+  effective_from DateTime        @db.Date
+  effective_to   DateTime?       @db.Date
+  created_by     Int?
+  created_at     DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at     DateTime?       @default(now()) @db.Timestamp(6)
+    rent_invoices  rent_invoices[]
+    colonies       colonies?       @relation(fields: [colony_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+    residential_units residential_units? @relation(fields: [flat_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+    users          users?          @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+    @@index([flat_id], map: "idx_rent_rates_flat_id")
+  }
+
+model residential_units {
+  id                  Int                   @id @default(autoincrement())
+  flat_no             String                @db.VarChar(255)
+  flat_address        String                @db.VarChar(500)
+  flat_rooms          Int?
+  latitude            Decimal?              @db.Decimal(10, 7)
+  longitude           Decimal?              @db.Decimal(10, 7)
+  status              flat_status           @default(empty)
+  colony_id           Int
+  created_by          Int?
+  created_at          DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamp(6)
+  caretaker_tasks     caretaker_tasks[]
+  complaints          complaints[]
+  eviction_cases      eviction_cases[]
+  flat_assignments    flat_assignments?
+  colonies            colonies              @relation(fields: [colony_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+    users               users?                @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+    rent_rates          rent_rates[]
+    utility_bills       utility_bills[]
+  utility_connections utility_connections[]
+
+  @@unique([colony_id, flat_no])
+}
+
+model task_proofs {
+  id                          Int             @id @default(autoincrement())
+  task_id                     Int
+  uploaded_by_user_id         Int?
+  image_document_id           Int?
+  latitude                    Decimal?        @db.Decimal(10, 7)
+  longitude                   Decimal?        @db.Decimal(10, 7)
+  accuracy                    Decimal?        @db.Decimal(10, 2)
+  distance_from_target_meters Decimal?        @db.Decimal(10, 2)
+  is_within_allowed_radius    Boolean?        @default(false)
+  uploaded_at                 DateTime?       @default(now()) @db.Timestamp(6)
+  remarks                     String?         @db.VarChar(500)
+  created_at                  DateTime?       @default(now()) @db.Timestamp(6)
+  documents                   documents?      @relation(fields: [image_document_id], references: [id], onUpdate: NoAction)
+  caretaker_tasks             caretaker_tasks @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                       users?          @relation(fields: [uploaded_by_user_id], references: [id], onUpdate: NoAction)
+}
+
+model users {
+  id                                                                  Int                      @id @default(autoincrement())
+  name                                                                String                   @db.VarChar(255)
+  email                                                               String                   @unique @db.VarChar(255)
+  password_hash                                                       String                   @db.VarChar(255)
+  phone_number                                                        String?                  @db.VarChar(30)
+  status                                                              user_status              @default(active)
+  profile_photo                                                       String?                  @db.VarChar(500)
+  role                                                                user_role                @default(care_taker_labour_colony)
+  last_login_at                                                       DateTime?                @db.Timestamp(6)
+  created_at                                                          DateTime?                @default(now()) @db.Timestamp(6)
+  updated_at                                                          DateTime?                @default(now()) @db.Timestamp(6)
+  audit_logs                                                          audit_logs[]
+  caretaker_attendance                                                caretaker_attendance[]
+  caretaker_colonies                                                  caretaker_colonies[]
+  caretaker_gps_tracking                                              caretaker_gps_tracking[]
+  caretaker_tasks_caretaker_tasks_assigned_by_user_idTousers          caretaker_tasks[]        @relation("caretaker_tasks_assigned_by_user_idTousers")
+  caretaker_tasks_caretaker_tasks_assigned_to_user_idTousers          caretaker_tasks[]        @relation("caretaker_tasks_assigned_to_user_idTousers")
+  colonies                                                            colonies[]
+  complaints                                                          complaints[]
+  documents_documents_uploaded_byTousers                              documents[]              @relation("documents_uploaded_byTousers")
+  documents_documents_verified_byTousers                              documents[]              @relation("documents_verified_byTousers")
+  eviction_cases                                                       eviction_cases[]
+  eviction_hearings                                                    eviction_hearings[]
+  flat_assignments                                                    flat_assignments[]
+  industries                                                          industries[]
+  industry_users                                                      industry_users[]
+  late_fee_rules                                                      late_fee_rules[]
+  rent_payments                                                       rent_payments[]
+  rent_rates                                                          rent_rates[]
+  rent_remittances_rent_remittances_caretaker_user_idTousers          rent_remittances[]       @relation("rent_remittances_caretaker_user_idTousers")
+  rent_remittances_rent_remittances_received_by_user_idTousers        rent_remittances[]       @relation("rent_remittances_received_by_user_idTousers")
+  residential_units                                                   residential_units[]
+  zones                                                               zones[]
+  task_proofs                                                         task_proofs[]
+  utility_bills                                                       utility_bills[]
+  utility_payments_utility_payments_collected_by_user_idTousers       utility_payments[]       @relation("utility_payments_collected_by_user_idTousers")
+  utility_payments_utility_payments_created_byTousers                 utility_payments[]       @relation("utility_payments_created_byTousers")
+  worker_applications_worker_applications_approved_byTousers          worker_applications[]    @relation("worker_applications_approved_byTousers")
+  worker_applications_worker_applications_rejected_byTousers          worker_applications[]    @relation("worker_applications_rejected_byTousers")
+  worker_applications_worker_applications_submitted_by_user_idTousers worker_applications[]    @relation("worker_applications_submitted_by_user_idTousers")
+  worker_applications_worker_applications_verified_byTousers          worker_applications[]    @relation("worker_applications_verified_byTousers")
+}
+
+model utility_bill_fetch_attempts {
+  id                    Int                  @id @default(autoincrement())
+  utility_connection_id Int
+  billing_month         DateTime             @db.Date
+  attempted_at          DateTime?            @default(now()) @db.Timestamp(6)
+  status                fetch_attempt_status
+  api_response_code     String?              @db.VarChar(100)
+  error_message         String?              @db.VarChar(500)
+  created_at            DateTime?            @default(now()) @db.Timestamp(6)
+  utility_connections   utility_connections  @relation(fields: [utility_connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model utility_bills {
+  id                    Int                  @id @default(autoincrement())
+  utility_connection_id Int?
+  flat_assignment_id    Int?
+  worker_id             Int?
+  flat_id               Int?
+  utility_type          utility_type
+  billing_month         DateTime             @db.Date
+  amount                BigInt               @default(0)
+  due_date              DateTime?            @db.Date
+  status                bill_status          @default(unpaid)
+  created_by            Int?
+  created_at            DateTime?            @default(now()) @db.Timestamp(6)
+  updated_at            DateTime?            @default(now()) @db.Timestamp(6)
+  users                 users?               @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  flat_assignments      flat_assignments?    @relation(fields: [flat_assignment_id], references: [id], onUpdate: NoAction)
+  residential_units     residential_units?   @relation(fields: [flat_id], references: [id], onUpdate: NoAction)
+  utility_connections   utility_connections? @relation(fields: [utility_connection_id], references: [id], onUpdate: NoAction)
+  workers               workers?             @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+  utility_payments      utility_payments[]
+
+  @@unique([utility_connection_id, billing_month])
+  @@index([billing_month], map: "idx_utility_bills_billing_month")
+}
+
+model utility_connections {
+  id                          Int                           @id @default(autoincrement())
+  flat_id                     Int
+  utility_type                utility_type
+  provider_name               String?                       @db.VarChar(255)
+  consumer_number             String                        @db.VarChar(255)
+  is_active                   Boolean                       @default(true)
+  created_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  updated_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  utility_bill_fetch_attempts utility_bill_fetch_attempts[]
+  utility_bills               utility_bills[]
+  residential_units           residential_units             @relation(fields: [flat_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([utility_type, consumer_number])
+}
+
+model utility_payments {
+  id                                                 Int           @id @default(autoincrement())
+  utility_bill_id                                    Int
+  amount                                             BigInt
+  payment_date                                       DateTime      @db.Date
+  collected_by_user_id                               Int?
+  receipt_no                                         String?       @db.VarChar(100)
+  created_by                                         Int?
+  created_at                                         DateTime?     @default(now()) @db.Timestamp(6)
+  updated_at                                         DateTime?     @default(now()) @db.Timestamp(6)
+  users_utility_payments_collected_by_user_idTousers users?        @relation("utility_payments_collected_by_user_idTousers", fields: [collected_by_user_id], references: [id], onUpdate: NoAction)
+  users_utility_payments_created_byTousers           users?        @relation("utility_payments_created_byTousers", fields: [created_by], references: [id], onUpdate: NoAction)
+  utility_bills                                      utility_bills @relation(fields: [utility_bill_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model worker_applications {
+  id                                                                                Int                  @id @default(autoincrement())
+  application_no                                                                    String               @unique @db.VarChar(100)
+  application_type                                                                  application_type
+  status                                                                            application_status   @default(draft)
+  worker_id                                                                         Int
+  industry_id                                                                       Int?
+  submitted_by_user_id                                                              Int?
+  current_flat_assignment_id                                                        Int?
+  requested_colony_id                                                               Int?
+  requested_unit_type                                                               String?              @db.VarChar(100)
+  submitted_at                                                                      DateTime?            @db.Timestamp(6)
+  verified_by                                                                       Int?
+  verified_at                                                                       DateTime?            @db.Timestamp(6)
+    verification_status                                                               verification_status? @default(pending)
+    verification_remarks                                                              String?              @db.VarChar(500)
+    recommended_rent_amount                                                           BigInt?
+    committee_meeting_id                                                              Int?
+  committee_decision                                                                committee_decision?
+  committee_decision_date                                                           DateTime?            @db.Date
+  committee_remarks                                                                 String?              @db.VarChar(500)
+  approved_by                                                                       Int?
+  approved_at                                                                       DateTime?            @db.Timestamp(6)
+  rejected_by                                                                       Int?
+  rejected_at                                                                       DateTime?            @db.Timestamp(6)
+  rejected_reason                                                                   String?              @db.VarChar(500)
+  priority_score                                                                    Int?                 @default(0)
+  remarks                                                                           String?              @db.VarChar(500)
+  created_at                                                                        DateTime?            @default(now()) @db.Timestamp(6)
+  updated_at                                                                        DateTime?            @default(now()) @db.Timestamp(6)
+  documents                                                                         documents[]
+  flat_assignments_flat_assignments_application_idToworker_applications             flat_assignments[]   @relation("flat_assignments_application_idToworker_applications")
+  notifications                                                                     notifications[]
+  flat_assignments_worker_applications_current_flat_assignment_idToflat_assignments flat_assignments?    @relation("worker_applications_current_flat_assignment_idToflat_assignments", fields: [current_flat_assignment_id], references: [id], onUpdate: NoAction, map: "fk_worker_applications_current_assignment")
+  users_worker_applications_approved_byTousers                                      users?               @relation("worker_applications_approved_byTousers", fields: [approved_by], references: [id], onUpdate: NoAction)
+  industries                                                                        industries?          @relation(fields: [industry_id], references: [id], onUpdate: NoAction)
+  users_worker_applications_rejected_byTousers                                      users?               @relation("worker_applications_rejected_byTousers", fields: [rejected_by], references: [id], onUpdate: NoAction)
+  colonies                                                                          colonies?            @relation(fields: [requested_colony_id], references: [id], onUpdate: NoAction)
+  users_worker_applications_submitted_by_user_idTousers                             users?               @relation("worker_applications_submitted_by_user_idTousers", fields: [submitted_by_user_id], references: [id], onUpdate: NoAction)
+  users_worker_applications_verified_byTousers                                      users?               @relation("worker_applications_verified_byTousers", fields: [verified_by], references: [id], onUpdate: NoAction)
+  workers                                                                           workers              @relation(fields: [worker_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([status], map: "idx_worker_applications_status")
+  @@index([worker_id], map: "idx_worker_applications_worker_id")
+}
+
+model workers {
+  id                      Int                   @id @default(autoincrement())
+  name                    String                @db.VarChar(255)
+  father_name             String                @db.VarChar(255)
+  cnic                    String                @unique @db.VarChar(15)
+  dob                     DateTime              @db.Date
+  address                 String?               @db.VarChar(500)
+  essi_no                 String?               @unique @db.VarChar(255)
+  eobi_no                 String?               @unique @db.VarChar(255)
+  designation             String?               @db.VarChar(255)
+  salary_per_month        BigInt?
+  total_duration_service  Int?
+  total_payment_by        String?               @db.VarChar(50)
+  total_number_dependents Int?
+  mobile_no_1             String?               @db.VarChar(20)
+  mobile_no_2             String?               @db.VarChar(20)
+  worker_type             worker_type           @default(industry)
+  status                  worker_status         @default(pending)
+  created_at              DateTime?             @default(now()) @db.Timestamp(6)
+  updated_at              DateTime?             @default(now()) @db.Timestamp(6)
+  complaints              complaints[]
+  eviction_cases          eviction_cases[]
+  flat_assignments        flat_assignments?
+  rent_invoices           rent_invoices[]
+  utility_bills           utility_bills[]
+  worker_applications     worker_applications[]
+}
+
+enum application_status {
+  draft
+  submitted
+  under_verification
+  verification_failed
+  verified
+  committee_pending
+  approved
+  rejected
+  flat_assigned
+  cancelled
+  closed
+}
+
+enum application_type {
+  new_allotment
+  reapply
+  reallotment
+  transfer
+  flat_change
+  vacation
+  cancellation
+}
+
+enum asset_status {
+  ok
+  defective
+  under_repair
+  repaired
+  inactive
+}
+
+enum assignment_status {
+  active
+  vacated
+  cancelled
+  transferred
+  expired
+}
+
+enum attendance_status {
+  active
+  completed
+  force_closed
+}
+
+enum bill_status {
+  unpaid
+  partial
+  paid
+  overdue
+  cancelled
+  not_generated
+}
+
+enum committee_decision {
+  approved
+  rejected
+  deferred
+}
+
+enum complaint_status {
+  open
+  assigned
+  in_progress
+  resolved
+  closed
+  rejected
+  reopened
+}
+
+enum deduction_status {
+  not_required
+  pending
+  deducted
+  failed
+  adjusted
+}
+
+enum document_owner {
+  worker
+  allotment
+  complaint
+  rent_payment
+  utility_bill
+  asset
+  task_proof
+  eviction_case
+}
+
+enum document_status {
+  pending
+  processing
+  approved
+  rejected
+  completed
+  expired
+  archived
+}
+
+enum document_visibility {
+  worker
+  management_only
+  finance
+  director
+  caretaker
+}
+
+enum eviction_status {
+  illegal_identified
+  notice_served
+  case_filed
+  hearing_pending
+  order_received
+  police_scheduled
+  vacated
+  closed
+  stayed
+}
+
+enum fetch_attempt_status {
+  found
+  not_generated
+  api_failed
+  invalid_consumer
+}
+
+enum flat_status {
+  empty
+  reserved
+  filled
+  under_repair
+  sealed
+  disputed
+}
+
+enum late_fee_type {
+  per_day
+  fixed
+  percentage
+}
+
+enum notification_status {
+  pending
+  sent
+  read
+  failed
+}
+
+enum payment_mode {
+  manual
+  salary_deduction
+  bank_transfer
+  online
+}
+
+enum recipient_type {
+  user
+  worker
+  industry
+}
+
+enum rent_invoice_status {
+  unpaid
+  partial
+  paid
+  overdue
+  cancelled
+  adjusted
+}
+
+enum task_status {
+  assigned
+  accepted
+  in_progress
+  proof_uploaded
+  completed
+  rejected
+  cancelled
+}
+
+enum user_role {
+  admin
+  super_admin
+  ad_colonies_zone1
+  ad_colonies_zone2
+  works_wing
+  finance_wing
+  recoveries_rent
+  care_taker_labour_colony
+  colony_section
+  legal_section
+  deputy_director_gahr
+  director_admin
+  secretary_kp_wwb
+  chairman_kp_wwb
+  // External applicant portal user (industries that apply for worker allotment).
+  // Retained from the legacy role set because the worker-application flow depends on it.
+  industry_admin
+}
+
+enum user_status {
+  active
+  disabled
+  blocked
+}
+
+enum utility_type {
+  electricity
+  gas
+  water
+  internet
+  ptcl
+  other
+}
+
+enum verification_status {
+  pending
+  passed
+  failed
+}
+
+enum worker_status {
+  pending
+  under_verification
+  approved
+  active
+  rejected
+  inactive
+  left
+  blacklisted
+}
+
+enum worker_type {
+  welfare_board
+  industry
+}

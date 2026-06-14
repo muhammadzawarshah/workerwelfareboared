@@ -1,0 +1,414 @@
+"use client";
+
+import { useState } from "react";
+import type { DataProps, GenericRecord, RentInvoice } from "@/src/types";
+import { apiRequest } from "@/src/lib/api";
+import { money } from "@/src/lib/format";
+import { findDocumentTypeId } from "@/src/lib/documents";
+import { useModal } from "@/src/hooks/useModal";
+import { useSyncedState } from "@/src/hooks/useSyncedState";
+import { useToast } from "@/src/components/ui/ToastProvider";
+import { Modal } from "@/src/components/ui/Modal";
+import { MetricCard } from "@/src/components/ui/MetricCard";
+import { StatusPill } from "@/src/components/ui/StatusPill";
+import { FilterBar } from "@/src/components/ui/FilterBar";
+import { RefreshButton } from "@/src/components/ui/RefreshButton";
+import { ChartCard } from "@/src/components/ui/Charts";
+
+export function RentDashboard({
+  rent: initial,
+  workers,
+  lateFeeRules = [],
+  documentTypes = [],
+  token,
+  role,
+  onRefresh,
+  isRefreshing,
+}: Pick<DataProps, "rent" | "workers"> & {
+  lateFeeRules?: GenericRecord[];
+  documentTypes?: GenericRecord[];
+  token?: string;
+  role?: string;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
+}) {
+  const { modal, open, close } = useModal();
+  const [rent] = useSyncedState(initial);
+  const [filter, setFilter] = useState("");
+  const setMessage = useToast();
+  const [collectionInvoice, setCollectionInvoice] = useState<RentInvoice | null>(null);
+  const [collectionForm, setCollectionForm] = useState({ amount: "", payment_date: new Date().toISOString().slice(0, 10), method: "cash", receipt_no: "", remarks: "" });
+  const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
+  // Only the accountant / finance side generates vouchers; the caretaker collects.
+  const canGenerateInvoices = ["super_admin", "admin", "director_admin", "finance_wing", "recoveries_rent"].includes(role || "");
+
+  const filtered = rent.filter((inv) => {
+    if (!filter) return true;
+    const w = workers.find((x) => x.id === inv.worker_id);
+    return [w?.name, w?.cnic, inv.status, inv.billing_month].join(" ").toLowerCase().includes(filter.toLowerCase());
+  });
+
+  const total = rent.reduce((s, i) => s + Number(i.total_amount), 0);
+  const paid = rent.reduce((s, i) => s + Number(i.paid_amount), 0);
+  const collectionRate = total > 0 ? Math.round((paid / total) * 100) : 0;
+  const lateFeePercent = Number(lateFeeRules.filter((rule) => rule.is_active !== false && rule.fee_type === "percentage").sort((a, b) => Number(b.id) - Number(a.id))[0]?.amount || 0);
+  const outstandingByWorker = Array.from(
+    rent
+      .filter((invoice) => !["paid", "cancelled"].includes(invoice.status) && Math.max(Number(invoice.total_amount) - Number(invoice.paid_amount), 0) > 0)
+      .reduce((map, invoice) => {
+        const existing = map.get(invoice.worker_id) || { worker_id: invoice.worker_id, months: 0, rent: 0, paid: 0, lateFee: 0, payable: 0 };
+        const rentAmount = Number(invoice.rent_amount || invoice.total_amount || 0);
+        const balance = Math.max(Number(invoice.total_amount) - Number(invoice.paid_amount), 0);
+        const lateFee = Number(invoice.late_fee_amount || 0) || Math.round((rentAmount * lateFeePercent) / 100);
+        existing.months += 1;
+        existing.rent += rentAmount;
+        existing.paid += Number(invoice.paid_amount || 0);
+        existing.lateFee += lateFee;
+        existing.payable += balance + lateFee;
+        map.set(invoice.worker_id, existing);
+        return map;
+      }, new Map<number, { worker_id: number; months: number; rent: number; paid: number; lateFee: number; payable: number }>())
+      .values(),
+  );
+
+  function viewInvoice(inv: RentInvoice) {
+    const w = workers.find((x) => x.id === inv.worker_id);
+    const due = Math.max(Number(inv.total_amount) - Number(inv.paid_amount), 0);
+    open({
+      type: "view",
+      title: `Rent Invoice — ${w?.name || `Worker #${inv.worker_id}`}`,
+      fields: [
+        ["Worker", w?.name],
+        ["CNIC", w?.cnic],
+        ["Designation", w?.designation],
+        ["Billing Month", inv.billing_month?.slice(0, 7)],
+        ["Monthly Rent", money(inv.rent_amount)],
+        ["Total Due", money(inv.total_amount)],
+        ["Paid", money(inv.paid_amount)],
+        ["Balance", money(due)],
+        ["Status", inv.status],
+      ],
+    });
+  }
+
+  function collectRentPayment(inv: RentInvoice) {
+    const due = Math.max(Number(inv.total_amount) - Number(inv.paid_amount), 0);
+    if (due <= 0 || ["paid", "cancelled"].includes(inv.status)) {
+      setMessage("This invoice has no collectible balance.");
+      return;
+    }
+    setCollectionInvoice(inv);
+    setCollectionForm({ amount: String(due), payment_date: new Date().toISOString().slice(0, 10), method: "cash", receipt_no: "", remarks: "" });
+    setPaymentProofFile(null);
+    setMessage("");
+  }
+
+  async function submitRentCollection() {
+    if (!collectionInvoice) return;
+    const due = Math.max(Number(collectionInvoice.total_amount) - Number(collectionInvoice.paid_amount), 0);
+    const amt = Number(collectionForm.amount);
+    const requiresProof = collectionForm.method !== "cash";
+    if (!amt || amt <= 0 || amt > due) {
+      setMessage(`Payment amount must be between Rs. 1 and ${money(due)}.`);
+      return;
+    }
+    if (requiresProof && !paymentProofFile) {
+      setMessage("Proof image is required for non-cash payments.");
+      return;
+    }
+    const proofDocumentTypeId = requiresProof ? findDocumentTypeId(documentTypes, ["rent payment proof", "payment proof", "receipt", "proof"]) : undefined;
+    if (requiresProof && !proofDocumentTypeId) {
+      setMessage("Rent payment proof document type is missing. Please create it before recording non-cash payments.");
+      return;
+    }
+    setMessage("Recording rent payment...");
+    try {
+      const payment = await apiRequest<GenericRecord>(`/rent-invoices/${collectionInvoice.id}/pay`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: String(amt),
+          payment_date: collectionForm.payment_date,
+          payment_method: collectionForm.method,
+          receipt_no: collectionForm.receipt_no,
+          remarks: collectionForm.remarks,
+        }),
+      });
+      if (requiresProof && paymentProofFile) {
+        const upload = new FormData();
+        upload.append("file", paymentProofFile);
+        upload.append("document_type_id", String(proofDocumentTypeId));
+        upload.append("owner_type", "rent_payment");
+        upload.append("owner_id", String(payment.id));
+        upload.append("visibility", "finance");
+        upload.append("remarks", `Rent ${collectionForm.method} proof for invoice #${collectionInvoice.id}`);
+        await apiRequest("/documents/upload", token, { method: "POST", body: upload });
+      }
+      setCollectionInvoice(null);
+      setPaymentProofFile(null);
+      setMessage("Rent payment recorded successfully.");
+      onRefresh?.();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Rent payment failed.");
+    }
+  }
+
+  function generateMonthlyInvoices() {
+    const today = new Date();
+    const month = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+    const dueDate = new Date(today.getFullYear(), today.getMonth(), 5).toISOString().slice(0, 10);
+    open({
+      type: "form",
+      title: "Generate Monthly Rent",
+      submitLabel: "Generate Invoices",
+      fields: [
+        { name: "billing_month", label: "Billing Month", type: "date", defaultValue: month, required: true },
+        { name: "due_date", label: "Due Date", type: "date", defaultValue: dueDate, required: true },
+      ],
+      onSubmit: async (data) => {
+        setMessage("Generating rent invoices...");
+        try {
+          type GenResult = { created: number; skipped: number; regenerated: number; already_generated: boolean; billing_month: string };
+          const res = await apiRequest<GenResult>("/rent-invoices/generate", token, { method: "POST", body: JSON.stringify(data) });
+          if (res.already_generated) {
+            // Invoices for this month already exist — ask the accountant before
+            // regenerating, and only the un-paid ones are ever touched.
+            const monthLabel = (res.billing_month || "").slice(0, 7);
+            const ok = window.confirm(
+              `${monthLabel} ke invoices pehle se generate ho chuke hain. Sirf un-paid invoices dobara generate karein? (Paid invoices ko haath nahi lagaya jayega.)`,
+            );
+            if (!ok) {
+              setMessage(`${monthLabel}: already generated — koi change nahi kiya.`);
+              return;
+            }
+            const forced = await apiRequest<GenResult>("/rent-invoices/generate", token, { method: "POST", body: JSON.stringify({ ...data, force: true }) });
+            setMessage(`${forced.regenerated} un-paid invoice(s) regenerate huay${forced.skipped ? `, ${forced.skipped} paid/protected chhode gaye` : ""}.`);
+            onRefresh?.();
+            return;
+          }
+          setMessage(`${res.created} invoice(s) generate huay${res.skipped ? ` (${res.skipped} pehle se mojood thay)` : ""}.`);
+          onRefresh?.();
+        } catch (error) {
+          setMessage(error instanceof Error ? error.message : "Invoice generation failed.");
+        }
+      },
+    });
+  }
+
+  async function applyLateFeeToInvoice(inv: RentInvoice) {
+    setMessage("Applying late fee...");
+    try {
+      await apiRequest(`/rent-invoices/${inv.id}/apply-late-fee`, token, { method: "POST" });
+      setMessage("Late fee check completed.");
+      onRefresh?.();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Late fee update failed.");
+    }
+  }
+
+  return (
+    <div className="screen-stack">
+      {modal && <Modal content={modal} onClose={close} />}
+      {collectionInvoice ? (
+        <div className="modal-backdrop" onClick={() => setCollectionInvoice(null)}>
+          <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Collect Rent</h3>
+              <button className="modal-close-btn" onClick={() => setCollectionInvoice(null)}>
+                x
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-form-grid">
+                <label>
+                  Payment Amount (Rs.)
+                  <input type="number" min={1} value={collectionForm.amount} onChange={(event) => setCollectionForm((prev) => ({ ...prev, amount: event.target.value }))} />
+                </label>
+                <label>
+                  Payment Date
+                  <input type="date" value={collectionForm.payment_date} onChange={(event) => setCollectionForm((prev) => ({ ...prev, payment_date: event.target.value }))} />
+                </label>
+                <label>
+                  Payment Method
+                  <select
+                    value={collectionForm.method}
+                    onChange={(event) => {
+                      setCollectionForm((prev) => ({ ...prev, method: event.target.value }));
+                      setPaymentProofFile(null);
+                    }}
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="online">Online</option>
+                    <option value="cheque">Cheque</option>
+                    <option value="easypaisa">Easypaisa</option>
+                    <option value="jazzcash">JazzCash</option>
+                  </select>
+                </label>
+                <label>
+                  Receipt No
+                  <input value={collectionForm.receipt_no} onChange={(event) => setCollectionForm((prev) => ({ ...prev, receipt_no: event.target.value }))} placeholder="Optional reference" />
+                </label>
+                <label className="wide">
+                  Remarks
+                  <textarea value={collectionForm.remarks} onChange={(event) => setCollectionForm((prev) => ({ ...prev, remarks: event.target.value }))} placeholder="Optional notes" />
+                </label>
+                {collectionForm.method !== "cash" ? (
+                  <label className="wide">
+                    Payment Proof Image
+                    <input type="file" accept=".jpg,.jpeg,.png" onChange={(event) => setPaymentProofFile(event.target.files?.[0] || null)} />
+                    <small className="field-helper">Required for bank transfer, online, cheque, Easypaisa, and JazzCash.</small>
+                  </label>
+                ) : null}
+              </div>
+              <div className="modal-footer">
+                <button className="ghost-button" onClick={() => setCollectionInvoice(null)}>
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={submitRentCollection}>
+                  Record Payment
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <section className="metric-grid">
+        <MetricCard title="Total Rent" value={money(total)} hint="Billing period" />
+        <MetricCard title="Collected" value={money(paid)} hint={`${collectionRate}% collection rate`} tone="green" />
+        <MetricCard title="Pending" value={money(Math.max(total - paid, 0))} hint="Action required" tone="amber" />
+        <MetricCard title="Defaulters" value={rent.filter((i) => ["unpaid", "overdue"].includes(i.status)).length} hint="Carry forward" tone="red" />
+      </section>
+      <div className="toolbar-row">
+        {canGenerateInvoices ? (
+          <button className="primary-button" onClick={generateMonthlyInvoices}>
+            Generate Monthly Rent
+          </button>
+        ) : null}
+        <button className="ghost-button" onClick={() => window.print()}>
+          Export Report
+        </button>
+        <button className="ghost-button" onClick={() => window.print()}>
+          Print Summary
+        </button>
+      </div>
+      <ChartCard title="Collection Overview" stacked />
+      <section className="data-card">
+        <div className="card-title">
+          <div>
+            <h2>Multi-Month Outstanding</h2>
+            <p>Worker-wise unpaid months with rent, late fee, and total payable.</p>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>CNIC</th>
+              <th>Unpaid Months</th>
+              <th>Rent Total</th>
+              <th>Paid</th>
+              <th>Late Fee</th>
+              <th>Total Payable</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!outstandingByWorker.length ? (
+              <tr>
+                <td colSpan={7}>No unpaid multi-month outstanding found.</td>
+              </tr>
+            ) : null}
+            {outstandingByWorker.map((item) => {
+              const worker = workers.find((w) => w.id === item.worker_id);
+              return (
+                <tr key={item.worker_id} className={item.months >= 2 ? "danger-row" : "warning-row"}>
+                  <td>
+                    <strong>{worker?.name || `Worker #${item.worker_id}`}</strong>
+                    <br />
+                    <span>{worker?.designation || "Rent account"}</span>
+                  </td>
+                  <td>{worker?.cnic || "Not linked"}</td>
+                  <td>{item.months}</td>
+                  <td>{money(item.rent)}</td>
+                  <td>{money(item.paid)}</td>
+                  <td className={item.lateFee > 0 ? "text-red" : ""}>{money(item.lateFee)}</td>
+                  <td>
+                    <strong>{money(item.payable)}</strong>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+      <section className="data-card">
+        <div className="card-title">
+          <div>
+            <h2>Rent Collection Register</h2>
+            <p>Colony Section</p>
+          </div>
+          <div className="card-actions">
+            <RefreshButton onRefresh={onRefresh} isRefreshing={isRefreshing} />
+            <button className="ghost-button">Columns</button>
+          </div>
+        </div>
+        <FilterBar placeholders={["Name / CNIC / Quarter No...", "All Colonies", "All Months", "All Status"]} values={[filter, "", "", ""]} onChange={(i, v) => { if (i === 0) setFilter(v); }} />
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Allottee Name</th>
+              <th>CNIC</th>
+              <th>Month</th>
+              <th>Monthly Rent</th>
+              <th>Due Amount</th>
+              <th>Paid Amount</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!filtered.length ? (
+              <tr>
+                <td colSpan={9}>{filter ? "No results match your search." : "No rent invoices found."}</td>
+              </tr>
+            ) : null}
+            {filtered.map((inv, index) => {
+              const w = workers.find((x) => x.id === inv.worker_id) || workers[index % Math.max(workers.length, 1)];
+              const due = Math.max(Number(inv.total_amount) - Number(inv.paid_amount), 0);
+              const canCollect = due > 0 && !["paid", "cancelled"].includes(inv.status);
+              return (
+                <tr key={inv.id} className={["unpaid", "overdue"].includes(inv.status) ? "danger-row" : inv.status === "partial" ? "warning-row" : ""}>
+                  <td>{String(index + 1).padStart(3, "0")}</td>
+                  <td>
+                    <strong>{w?.name || `Worker #${inv.worker_id}`}</strong>
+                    <br />
+                    <span>{w?.designation || "Rent account"}</span>
+                  </td>
+                  <td>{w?.cnic || "Not linked"}</td>
+                  <td>{inv.billing_month?.slice(0, 7) || "-"}</td>
+                  <td>{money(inv.rent_amount)}</td>
+                  <td className={due > 0 ? "text-red" : "text-green"}>{money(due)}</td>
+                  <td>{money(inv.paid_amount)}</td>
+                  <td>
+                    <StatusPill status={inv.status} />
+                  </td>
+                  <td>
+                    <div className="action-buttons">
+                      <button onClick={() => viewInvoice(inv)}>View</button>
+                      {canCollect ? (
+                        <button className="btn-approve" onClick={() => collectRentPayment(inv)}>
+                          Collect
+                        </button>
+                      ) : null}
+                      {canGenerateInvoices && inv.status !== "paid" && inv.status !== "cancelled" ? <button onClick={() => applyLateFeeToInvoice(inv)}>Late Fee</button> : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+}
