@@ -15,7 +15,7 @@ export class CaretakerController {
   @Post('caretaker-attendance/:id/logout') legacyLogout(@Param('id') id: string, @Body() b: unknown) { return this.service.attendanceLogout(id, b); }
 
   @Post('caretaker/gps') gps(@Body() b: unknown, @Req() req: { user?: unknown }) { return this.service.gpsPing(b, req.user as never); }
-  @Get('caretaker/gps') gpsList(@Query() q: ListQueryDto) { return this.service.list('caretaker-gps', q as Record<string, unknown>); }
+  @Get('caretaker/gps') gpsList(@Query() q: ListQueryDto, @Req() req: { user?: unknown }) { return this.service.list('caretaker-gps', q as Record<string, unknown>, req.user as never); }
   @Get('caretaker/gps/:userId') gpsUser(@Param('userId') userId: string, @Query() q: Record<string, unknown>) { return this.service.list('caretaker-gps', { ...q, user_id: Number(userId) }); }
   @Post('caretaker-gps/ping') legacyGps(@Body() b: unknown, @Req() req: { user?: unknown }) { return this.service.gpsPing(b, req.user as never); }
 

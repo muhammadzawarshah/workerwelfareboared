@@ -30,6 +30,7 @@ export function ComplaintDashboard({
   complaints: initial,
   workers,
   token,
+  role,
   assets = [],
   colonies = [],
   users = [],
@@ -38,6 +39,7 @@ export function ComplaintDashboard({
   isRefreshing,
 }: Pick<DataProps, "complaints" | "workers"> & {
   token?: string;
+  role?: string;
   assets?: GenericRecord[];
   colonies?: GenericRecord[];
   users?: User[];
@@ -45,6 +47,10 @@ export function ComplaintDashboard({
   onRefresh?: () => void;
   isRefreshing?: boolean;
 }) {
+  // Only the caretaker verifies that the work is done; only management / colony
+  // section dispatch (forward) complaints. Works wing is view-only here.
+  const isCaretaker = role === "care_taker_labour_colony";
+  const canDispatch = ["super_admin", "admin", "director_admin", "colony_section"].includes(role || "");
   const { modal, open, close } = useModal();
   const toast = useToast();
   const [complaints, setComplaints] = useSyncedState(initial);
@@ -171,10 +177,16 @@ export function ComplaintDashboard({
 
   // ── Forward complaint to admin ───────────────────────────────────────────────
   function forwardComplaint(c: Complaint) {
+    // A complaint is forwarded to a caretaker (who goes on-site and verifies it).
+    const colonyCaretakers = caretakers.filter((u) => !c.colony_id || u.colony_id === c.colony_id);
+    const list = colonyCaretakers.length ? colonyCaretakers : caretakers;
+    if (!list.length) {
+      toast("Koi caretaker available nahi — pehle caretaker ko colony assign karein.", "error");
+      return;
+    }
     const options = [
-      { value: "", label: "Select admin / caretaker" },
-      ...admins.map((u) => ({ value: String(u.id), label: `${u.name} (${statusLabel(u.role)})` })),
-      ...caretakers.map((u) => ({ value: String(u.id), label: `${u.name} (Caretaker)` })),
+      { value: "", label: "Select caretaker" },
+      ...list.map((u) => ({ value: String(u.id), label: `${u.name} (Caretaker)` })),
     ];
     open({
       type: "form",
@@ -443,12 +455,14 @@ export function ComplaintDashboard({
                   <td>
                     <div className="action-buttons">
                       <button onClick={() => viewComplaint(c)}>View</button>
-                      <button onClick={() => forwardComplaint(c)}>Forward</button>
-                      {c.status === "resolved" || c.status === "closed" ? (
+                      {canDispatch && !["resolved", "closed"].includes(c.status) ? (
+                        <button onClick={() => forwardComplaint(c)}>Forward</button>
+                      ) : null}
+                      {["resolved", "closed"].includes(c.status) ? (
                         <button className="btn-approve" disabled>Verified</button>
-                      ) : (
+                      ) : isCaretaker ? (
                         <button className="btn-approve" onClick={() => openVerify(c)}>Verify Done</button>
-                      )}
+                      ) : null}
                     </div>
                   </td>
                 </tr>

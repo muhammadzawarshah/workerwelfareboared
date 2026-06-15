@@ -60,7 +60,9 @@ class ManagedLists {
         path: '/colonies',
         leading: Icons.location_city_outlined,
         fetch: _repo.colonies,
-        canManage: _can([AppRoles.directorAdmin, AppRoles.adColoniesZone1, AppRoles.adColoniesZone2, AppRoles.colonySection]),
+        // Colonies are set up by colony section / director only — AD (Colonies)
+        // oversee existing colonies but do not create them; works wing is view-only.
+        canManage: _can([AppRoles.directorAdmin, AppRoles.colonySection]),
         titleOf: (r) => asStr(r['name'], 'Colony #${asStr(r['id'])}'),
         subtitleOf: (r) => asStr(r['address'], 'No address'),
         fields: const [
@@ -98,12 +100,13 @@ class ManagedLists {
         path: '/residential-units',
         leading: Icons.home_work_outlined,
         fetch: _repo.flats,
+        // Flats are set up by colony section / AD (Colonies) / director —
+        // caretaker and works wing are view-only.
         canManage: _can([
           AppRoles.directorAdmin,
           AppRoles.adColoniesZone1,
           AppRoles.adColoniesZone2,
           AppRoles.colonySection,
-          AppRoles.careTakerLabourColony,
         ]),
         titleOf: (r) => '${asStr(r['flat_no'], 'Unit')} — ${asStr(r['flat_address'], '')}',
         subtitleOf: (r) => '${asStr(r['flat_rooms'], '-')} rooms',

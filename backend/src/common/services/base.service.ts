@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildListQuery, coerceData, distanceMeters, getResource, parseId, response } from '../helpers/resource.helpers';
-import { AD_COLONIES_ROLES, canAccess, ROLES } from '../roles/roles.util';
+import { AD_COLONIES_ROLES, canAccess, isPrivileged, ROLES } from '../roles/roles.util';
 
 type PrismaTx = {
   users: { findMany(args: Record<string, unknown>): Promise<{ id: number }[]> };
@@ -88,6 +88,57 @@ export class BaseService {
     });
   }
 
+  // --- Audit trail ---------------------------------------------------------
+  // Every mutation in the app funnels through this service, so recording the
+  // who/what/when here gives a complete, app-wide history without having to
+  // touch each individual module. Best-effort by design: a failed audit insert
+  // must NEVER break or roll back the real operation it is describing.
+  private static readonly AUDIT_SENSITIVE = new Set(['password', 'password_hash', 'token', 'access_token', 'refresh_token']);
+
+  // High-frequency / low-value resources we deliberately skip in the generic
+  // CRUD path so the audit log stays a readable action history, not noise.
+  private static readonly AUDIT_SKIP_RESOURCES = new Set(['audit-logs', 'caretaker-gps', 'notifications']);
+
+  // Strips sensitive keys and converts BigInt/Decimal to strings so the value
+  // is safe to store in the audit_logs JSON columns.
+  private auditValues(value: unknown): unknown {
+    if (value === undefined || value === null) return undefined;
+    return JSON.parse(
+      JSON.stringify(value, (key, val: unknown) => {
+        if (BaseService.AUDIT_SENSITIVE.has(key)) return undefined;
+        if (typeof val === 'bigint') return val.toString();
+        if (val && typeof val === 'object' && (val as { constructor?: { name?: string } }).constructor?.name === 'Decimal') {
+          return (val as { toString(): string }).toString();
+        }
+        return val;
+      }),
+    );
+  }
+
+  protected async writeAudit(params: {
+    user?: AuthUser;
+    action: string;
+    entityType: string;
+    entityId?: number | null;
+    oldValues?: unknown;
+    newValues?: unknown;
+  }): Promise<void> {
+    try {
+      await this.prisma.audit_logs.create({
+        data: {
+          user_id: this.userId(params.user) ?? null,
+          action: params.action,
+          entity_type: params.entityType,
+          entity_id: params.entityId ?? null,
+          old_values: (this.auditValues(params.oldValues) ?? undefined) as never,
+          new_values: (this.auditValues(params.newValues) ?? undefined) as never,
+        },
+      });
+    } catch {
+      // Audit logging is best-effort and must never break the actual action.
+    }
+  }
+
   private async industryIdsForUser(user?: AuthUser): Promise<number[]> {
     const id = this.userId(user);
     if (!id || user?.role !== 'industry_admin') return [];
@@ -111,6 +162,12 @@ export class BaseService {
   }
 
   private async scopedWhere(resource: string, where: Record<string, unknown>, user?: AuthUser): Promise<Record<string, unknown>> {
+    // A notifications inbox is always the signed-in user's own — never everyone's.
+    if (resource === 'notifications') {
+      const uid = this.userId(user);
+      if (!uid) return where;
+      return { AND: [where, { recipient_type: 'user', recipient_id: uid }] };
+    }
     if (user?.role === 'industry_admin') {
       const industryIds = await this.industryIdsForUser(user);
       if (!industryIds.length) return { AND: [where, { id: -1 }] };
@@ -138,6 +195,14 @@ export class BaseService {
         const colonyIds = await this.caretakerColonyIds(user);
         if (!colonyIds.length) return { AND: [where, { id: -1 }] };
         return { AND: [where, { colony_id: { in: colonyIds } }] };
+      }
+      // A caretaker only sees their own GPS track, not other caretakers'.
+      if (resource === 'caretaker-gps') {
+        return { AND: [where, { user_id: this.userId(user) }] };
+      }
+      // A caretaker only sees their own handover vouchers.
+      if (resource === 'rent-remittances') {
+        return { AND: [where, { caretaker_user_id: this.userId(user) }] };
       }
     }
     return where;
@@ -200,12 +265,13 @@ export class BaseService {
     if (resource === 'colonies') {
       this.requireRole(user, 'create a colony', ROLES.colonySection, ROLES.directorAdmin);
     }
-    // The caretaker is view-only on flats; they cannot create residential units.
+    // Flats are set up by the colony section / AD (Colonies) / director only —
+    // works wing and caretaker are view-only on flats.
     if (resource === 'residential-units') {
-      this.denyRoles(user, 'create a flat / residential unit', ROLES.careTakerLabourColony);
+      this.requireRole(user, 'create a flat / residential unit', ROLES.colonySection, ROLES.directorAdmin, ...AD_COLONIES_ROLES);
     }
     if (resource === 'users') {
-      return this.createUser(data);
+      return this.createUser(data, user);
     }
     if (resource === 'rent-payments') {
       return this.payRentInvoice(String(data.rent_invoice_id), data, user);
@@ -233,6 +299,9 @@ export class BaseService {
       const model = (tx as unknown as Record<string, PrismaModel>)[config.model];
       return model.create({ data });
     });
+    if (!BaseService.AUDIT_SKIP_RESOURCES.has(resource)) {
+      await this.writeAudit({ user, action: 'create', entityType: resource, entityId: (item as { id?: number }).id, newValues: item });
+    }
     return response(`${resource} record created successfully`, item);
   }
 
@@ -265,6 +334,8 @@ export class BaseService {
       return { worker, application };
     });
 
+    await this.writeAudit({ user, action: 'create', entityType: 'workers', entityId: result.worker.id, newValues: result.worker });
+    await this.writeAudit({ user, action: 'create', entityType: 'worker-applications', entityId: result.application.id, newValues: result.application });
     return response('Worker application created successfully', result);
   }
 
@@ -279,22 +350,27 @@ export class BaseService {
     // endpoint, but `users` has no colony_id column — the link lives in
     // caretaker_colonies. Route colony_id there and update the rest normally.
     if (resource === 'users' && 'colony_id' in data) {
-      return this.updateUserColonies(parseId(id), data);
+      return this.updateUserColonies(parseId(id), data, user);
     }
+    const numericId = parseId(id);
+    const before = BaseService.AUDIT_SKIP_RESOURCES.has(resource) ? null : await this.model(config.model).findUnique({ where: { id: numericId } });
     const item = await this.prisma.$transaction((tx) => {
       const model = (tx as unknown as Record<string, PrismaModel>)[config.model];
       return model.update({
-        where: { id: parseId(id) },
+        where: { id: numericId },
         data,
       });
     });
+    if (!BaseService.AUDIT_SKIP_RESOURCES.has(resource)) {
+      await this.writeAudit({ user, action: 'update', entityType: resource, entityId: numericId, oldValues: before, newValues: item });
+    }
     return response(`${resource} record updated successfully`, item);
   }
 
   // Replaces a caretaker's active colony set with the selected colony/colonies
   // (a caretaker manages one colony, but an array is accepted too), then applies
   // any other user fields included in the same update.
-  private async updateUserColonies(userId: number, data: Record<string, unknown>) {
+  private async updateUserColonies(userId: number, data: Record<string, unknown>, actor?: AuthUser) {
     const rawColony = data.colony_id;
     delete data.colony_id;
     const colonyIds = (Array.isArray(rawColony) ? rawColony : [rawColony])
@@ -323,6 +399,7 @@ export class BaseService {
       where: { user_id: userId, is_active: true },
       include: { colonies: true },
     });
+    await this.writeAudit({ user: actor, action: 'assign-colony', entityType: 'users', entityId: userId, newValues: { colony_ids: colonyIds } });
     return response('User colony assignment updated successfully', {
       id: userId,
       user_id: userId,
@@ -337,23 +414,25 @@ export class BaseService {
     if (resource === 'residential-units') {
       this.denyRoles(user, 'delete a flat / residential unit', ROLES.careTakerLabourColony);
     }
-    const model = this.model(config.model);
     const numericId = parseId(id);
+    const before = await this.model(config.model).findUnique({ where: { id: numericId } });
     if (config.softDeleteStatus) {
       const item = await this.prisma.$transaction((tx) => {
         const txModel = (tx as unknown as Record<string, PrismaModel>)[config.model];
         return txModel.update({ where: { id: numericId }, data: { status: config.softDeleteStatus } });
       });
+      await this.writeAudit({ user, action: 'soft-delete', entityType: resource, entityId: numericId, oldValues: before, newValues: { status: config.softDeleteStatus } });
       return response(`${resource} record status updated successfully`, item);
     }
     const item = await this.prisma.$transaction((tx) => {
       const txModel = (tx as unknown as Record<string, PrismaModel>)[config.model];
       return txModel.delete({ where: { id: numericId } });
     });
+    await this.writeAudit({ user, action: 'delete', entityType: resource, entityId: numericId, oldValues: before });
     return response(`${resource} record deleted successfully`, item);
   }
 
-  async createUser(data: Record<string, unknown>) {
+  async createUser(data: Record<string, unknown>, actor?: AuthUser) {
     const password = String(data.password ?? '');
     if (!password) throw new BadRequestException('password is required');
     if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{12,}$/.test(password)) {
@@ -379,6 +458,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ user: actor, action: 'create', entityType: 'users', entityId: (item as { id?: number }).id, newValues: item });
     return response('users record created successfully', item);
   }
 
@@ -486,6 +566,7 @@ export class BaseService {
         submitted_by_user_id: this.userId(user),
       },
     });
+    await this.writeAudit({ user, action: 'submit', entityType: 'worker-applications', entityId: data.id, newValues: { status: data.status } });
     return response('Application submitted successfully', data);
   }
 
@@ -507,6 +588,7 @@ export class BaseService {
         verified_at: new Date(),
       },
     });
+    await this.writeAudit({ user, action: passed ? 'verify' : 'verification-failed', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, verification_status: app.verification_status, verification_remarks: app.verification_remarks } });
     return response('Application verification updated successfully', app);
   }
 
@@ -524,6 +606,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ user, action: 'reject-verification', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, verification_remarks: app.verification_remarks } });
     return response('Application verification rejected successfully', app);
   }
 
@@ -543,6 +626,7 @@ export class BaseService {
         status,
       },
     });
+    await this.writeAudit({ action: 'committee-decision', entityType: 'worker-applications', entityId: app.id, newValues: { committee_decision: decision, status: app.status, committee_remarks: app.committee_remarks } });
     return response('Committee decision saved successfully', app);
   }
 
@@ -573,6 +657,7 @@ export class BaseService {
       });
       return updated;
     });
+    await this.writeAudit({ user, action: 'approve', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, committee_decision: app.committee_decision, committee_remarks: app.committee_remarks } });
     return response('Application approved successfully', app);
   }
 
@@ -589,6 +674,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ action: 'defer', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, committee_remarks: app.committee_remarks } });
     return response('Application deferred successfully', app);
   }
 
@@ -596,6 +682,7 @@ export class BaseService {
     const app = await this.prisma.$transaction((tx) =>
       tx.worker_applications.update({ where: { id: parseId(id) }, data: { status: 'cancelled' } }),
     );
+    await this.writeAudit({ action: 'cancel', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status } });
     return response('Application cancelled successfully', app);
   }
 
@@ -626,6 +713,7 @@ export class BaseService {
       });
       return updated;
     });
+    await this.writeAudit({ user, action: 'reject', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, rejected_reason: app.rejected_reason, committee_remarks: app.committee_remarks } });
     return response('Application rejected successfully', app);
   }
 
@@ -656,6 +744,7 @@ export class BaseService {
       });
       return updated;
     });
+    await this.writeAudit({ user, action: 'forward-to-ad-colony', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status } });
     return response('Application forwarded to AD (Colonies) successfully', app);
   }
 
@@ -694,6 +783,7 @@ export class BaseService {
       });
       return updated;
     });
+    await this.writeAudit({ user, action: 'forward-to-committee', entityType: 'worker-applications', entityId: app.id, newValues: { status: app.status, recommended_rent_amount: app.recommended_rent_amount } });
     return response('Application sent to committee successfully', app);
   }
 
@@ -753,6 +843,7 @@ export class BaseService {
       });
       return application;
     });
+    await this.writeAudit({ user, action: 'issue-allotment-notification', entityType: 'worker-applications', entityId: result.id, newValues: { application_no: result.application_no } });
     return response('Allotment notification issued successfully', result);
   }
 
@@ -861,6 +952,7 @@ export class BaseService {
       }
       return assignment;
     });
+    await this.writeAudit({ user, action: 'assign-flat', entityType: 'flat-assignments', entityId: created.id, newValues: created });
     return response('Flat assigned successfully', created);
   }
 
@@ -879,6 +971,7 @@ export class BaseService {
       await tx.residential_units.update({ where: { id: current.flat_id }, data: { status: 'empty' } });
       return current;
     });
+    await this.writeAudit({ action: 'vacate-flat', entityType: 'flat-assignments', entityId: assignment.id, newValues: { status: assignment.status, end_date: assignment.end_date, vacated_reason: assignment.vacated_reason } });
     return response('Flat vacated successfully', assignment);
   }
 
@@ -905,6 +998,7 @@ export class BaseService {
       await tx.residential_units.update({ where: { id: newFlatId }, data: { status: 'filled' } });
       return created;
     });
+    await this.writeAudit({ user, action: 'transfer-flat', entityType: 'flat-assignments', entityId: assignment.id, newValues: assignment });
     return response('Flat transferred successfully', assignment);
   }
 
@@ -914,6 +1008,7 @@ export class BaseService {
       await tx.residential_units.update({ where: { id: updated.flat_id }, data: { status: 'empty' } });
       return updated;
     });
+    await this.writeAudit({ action: 'cancel-flat-assignment', entityType: 'flat-assignments', entityId: assignment.id, newValues: { status: assignment.status } });
     return response('Flat assignment cancelled successfully', assignment);
   }
 
@@ -923,6 +1018,92 @@ export class BaseService {
 
   async flatAssignmentHistory(query: Record<string, unknown>) {
     return this.list('flat-assignments', query);
+  }
+
+  // Worker fields surfaced in occupancy results so the answer to "who lived
+  // here?" is a name/CNIC, not just a worker_id.
+  private static readonly OCCUPANT_WORKER_SELECT = {
+    id: true,
+    name: true,
+    father_name: true,
+    cnic: true,
+    mobile_no_1: true,
+    designation: true,
+  } as const;
+
+  // Full occupancy timeline of a flat: every worker ever assigned to it with
+  // the date range they held it (newest first). Because vacate/transfer only
+  // stamps end_date + status (never deletes the row), this reaches back as far
+  // as the records go — e.g. "who was in this flat 10 years ago".
+  async flatOccupancyHistory(flatId: string) {
+    const id = parseId(flatId);
+    const flat = await this.prisma.residential_units.findUnique({
+      where: { id },
+      select: { id: true, flat_no: true, flat_address: true, colony_id: true, status: true },
+    });
+    if (!flat) throw new NotFoundException('Residential unit not found');
+    const assignments = await this.prisma.flat_assignments.findMany({
+      where: { flat_id: id },
+      orderBy: [{ start_date: 'desc' }, { id: 'desc' }],
+      include: { workers: { select: BaseService.OCCUPANT_WORKER_SELECT } },
+    });
+    return response('Flat occupancy history fetched successfully', assignments, {
+      flat,
+      total: assignments.length,
+    });
+  }
+
+  // Resolves an "as of" window from the query. Supports ?date=YYYY-MM-DD (a
+  // single day), ?month=YYYY-MM (a whole month), ?year=YYYY (a whole year), or
+  // nothing (today). Returns an inclusive [from, to] range.
+  private occupancyRange(query: Record<string, unknown>): { from: Date; to: Date; label: string } {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    if (query.date) {
+      const day = new Date(String(query.date));
+      if (Number.isNaN(day.getTime())) throw new BadRequestException('date must be a valid YYYY-MM-DD');
+      return { from: day, to: day, label: day.toISOString().slice(0, 10) };
+    }
+    if (query.month) {
+      const [year, month] = String(query.month).split('-').map(Number);
+      if (!year || !month || month < 1 || month > 12) throw new BadRequestException('month must be in YYYY-MM format');
+      return {
+        from: new Date(Date.UTC(year, month - 1, 1)),
+        to: new Date(Date.UTC(year, month, 0)),
+        label: `${year}-${pad(month)}`,
+      };
+    }
+    if (query.year) {
+      const year = Number(query.year);
+      if (!Number.isInteger(year)) throw new BadRequestException('year must be a 4-digit year');
+      return { from: new Date(Date.UTC(year, 0, 1)), to: new Date(Date.UTC(year, 11, 31)), label: String(year) };
+    }
+    const today = new Date();
+    return { from: today, to: today, label: today.toISOString().slice(0, 10) };
+  }
+
+  // Point-in-time lookup: who occupied this flat at a given time. For a single
+  // day it returns the one occupant (or none, if the flat was vacant); for a
+  // month/year it returns everyone whose stay overlapped that window. An
+  // assignment overlaps when it started on/before the window end and had not
+  // ended before the window start (end_date null = still living there).
+  async flatOccupantOn(flatId: string, query: Record<string, unknown>) {
+    const id = parseId(flatId);
+    const { from, to, label } = this.occupancyRange(query);
+    const assignments = await this.prisma.flat_assignments.findMany({
+      where: {
+        flat_id: id,
+        start_date: { lte: to },
+        OR: [{ end_date: null }, { end_date: { gte: from } }],
+      },
+      orderBy: [{ start_date: 'desc' }, { id: 'desc' }],
+      include: { workers: { select: BaseService.OCCUPANT_WORKER_SELECT } },
+    });
+    return response('Flat occupant(s) fetched successfully', assignments, {
+      as_of: label,
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      count: assignments.length,
+    });
   }
 
   // Normalises any date to the first day of its month (UTC) so "June" always
@@ -1064,6 +1245,18 @@ export class BaseService {
           ? `${regeneratedCount} unpaid rent invoice(s) regenerated for ${monthLabel}.`
           : `Rent invoices for ${monthLabel} are already generated. Nothing to create.`;
 
+    await this.writeAudit({
+      user,
+      action: 'generate-rent-invoices',
+      entityType: 'rent-invoices',
+      newValues: {
+        billing_month: billingMonth.toISOString().slice(0, 10),
+        colony_id: data.colony_id ?? null,
+        created: createdCount,
+        skipped: skippedCount,
+        regenerated: regeneratedCount,
+      },
+    });
     return response(message, {
       billing_month: billingMonth.toISOString().slice(0, 10),
       created: createdCount,
@@ -1099,6 +1292,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ action: 'apply-late-fee', entityType: 'rent-invoices', entityId: updated.id, oldValues: { total_amount: invoice.total_amount, status: invoice.status }, newValues: { late_fee_amount: updated.late_fee_amount, total_amount: updated.total_amount, status: updated.status } });
     return response('Late fee applied successfully', updated);
   }
 
@@ -1106,6 +1300,7 @@ export class BaseService {
     const invoice = await this.prisma.$transaction((tx) =>
       tx.rent_invoices.update({ where: { id: parseId(id) }, data: { status: 'cancelled' } }),
     );
+    await this.writeAudit({ action: 'cancel-rent-invoice', entityType: 'rent-invoices', entityId: invoice.id, newValues: { status: invoice.status } });
     return response('Rent invoice cancelled successfully', invoice);
   }
 
@@ -1128,6 +1323,7 @@ export class BaseService {
       create: { user_id: caretakerId, colony_id: colonyId },
       update: { is_active: data.is_active === undefined ? true : Boolean(data.is_active) },
     });
+    await this.writeAudit({ user, action: 'assign-caretaker-to-colony', entityType: 'caretaker-colonies', entityId: link.id, newValues: { user_id: caretakerId, colony_id: colonyId, is_active: link.is_active } });
     return response('Caretaker assigned to colony successfully', link);
   }
 
@@ -1257,33 +1453,41 @@ export class BaseService {
 
   // Accountant collects the cash a caretaker is holding: bundle their
   // un-remitted payments into one remittance and stamp them as handed over.
-  async collectRentRemittance(body: unknown, user?: AuthUser) {
-    this.requireRole(user, 'collect a rent remittance', ROLES.financeWing, ROLES.recoveriesRent, ROLES.directorAdmin);
+  // Accountant generates a monthly handover voucher for a caretaker = the rent
+  // that caretaker collected that month and has not yet handed over. Starts
+  // 'pending'; the caretaker then pays it and uploads a screenshot.
+  async generateRemittanceVoucher(body: unknown, user?: AuthUser) {
+    this.requireRole(user, 'generate a remittance voucher', ROLES.financeWing, ROLES.recoveriesRent, ROLES.directorAdmin);
     const data = coerceData(body);
     const caretakerId = Number(data.caretaker_user_id ?? data.user_id);
     if (!caretakerId) throw new BadRequestException('caretaker_user_id is required');
-    const paymentIds = Array.isArray(data.payment_ids)
-      ? (data.payment_ids as unknown[]).map((value) => Number(value)).filter((value) => Number.isInteger(value))
-      : undefined;
-    const remittance = await this.prisma.$transaction(async (tx) => {
+    const month = this.monthStart(data.billing_month ? new Date(String(data.billing_month)) : new Date());
+    if (!month) throw new BadRequestException('billing_month is required');
+    const monthEnd = new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1));
+
+    const voucher = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.rent_remittances.findFirst({
+        where: { caretaker_user_id: caretakerId, billing_month: month, status: 'pending' },
+      });
+      if (existing) throw new BadRequestException('A pending voucher already exists for this caretaker and month.');
       const payments = await tx.rent_payments.findMany({
         where: {
           collected_user_id: caretakerId,
           remittance_id: null,
-          ...(paymentIds?.length ? { id: { in: paymentIds } } : {}),
+          payment_date: { gte: month, lt: monthEnd },
         },
         select: { id: true, amount: true },
       });
-      if (!payments.length) throw new BadRequestException('This caretaker has no un-remitted rent payments to collect');
+      if (!payments.length) throw new BadRequestException('Is caretaker ne is month koi rent collect nahi kiya (ya already vouchered hai).');
       const total = payments.reduce((sum, payment) => sum + payment.amount, BigInt(0));
       const created = await tx.rent_remittances.create({
         data: {
           caretaker_user_id: caretakerId,
           received_by_user_id: this.userId(user),
+          billing_month: month,
           total_amount: total,
           payment_count: payments.length,
-          status: 'received',
-          received_at: new Date(),
+          status: 'pending',
           remarks: data.remarks as string | undefined,
         },
       });
@@ -1295,16 +1499,57 @@ export class BaseService {
         data: {
           recipient_type: 'user',
           recipient_id: caretakerId,
-          title: 'Rent collection received',
-          message: `The accountant collected ${payments.length} rent payment(s) totalling ${total.toString()} from you.`,
-          notification_type: 'rent_remittance_received',
+          title: 'Rent handover voucher',
+          message: `Accountant ne ${month.toISOString().slice(0, 7)} ke liye Rs. ${total.toString()} ka handover voucher banaya hai. Cash de kar screenshot upload karein.`,
+          notification_type: 'remittance_voucher',
           status: 'sent',
           sent_at: new Date(),
         },
       });
       return created;
     });
-    return response('Rent remittance collected successfully', remittance);
+    await this.writeAudit({ user, action: 'generate-remittance-voucher', entityType: 'rent-remittances', entityId: voucher.id, newValues: { caretaker_user_id: voucher.caretaker_user_id, billing_month: voucher.billing_month, total_amount: voucher.total_amount, payment_count: voucher.payment_count } });
+    return response('Remittance voucher generated successfully', voucher);
+  }
+
+  // Caretaker pays their voucher: uploads a handover screenshot and marks it paid.
+  async payRemittanceVoucher(id: string, body: unknown, user?: AuthUser) {
+    const data = coerceData(body);
+    const voucher = await this.prisma.rent_remittances.findUnique({ where: { id: parseId(id) } });
+    if (!voucher) throw new NotFoundException('Voucher not found');
+    if (this.userId(user) !== voucher.caretaker_user_id && !isPrivileged(user?.role)) {
+      throw new ForbiddenException('Only the assigned caretaker can pay this voucher');
+    }
+    if (voucher.status === 'paid') throw new BadRequestException('This voucher is already paid');
+    const imageId = data.image_document_id ? Number(data.image_document_id) : undefined;
+    if (!imageId) throw new BadRequestException('A handover screenshot is required to mark the voucher paid');
+
+    const updated = await this.prisma.$transaction((tx) =>
+      tx.rent_remittances.update({
+        where: { id: voucher.id },
+        data: {
+          status: 'paid',
+          proof_document_id: imageId,
+          received_at: new Date(),
+          remarks: (data.remarks as string | undefined) ?? voucher.remarks,
+        },
+      }),
+    );
+    await this.writeAudit({ user, action: 'pay-remittance-voucher', entityType: 'rent-remittances', entityId: voucher.id, oldValues: { status: voucher.status }, newValues: { status: updated.status, proof_document_id: updated.proof_document_id, total_amount: updated.total_amount } });
+    if (voucher.received_by_user_id) {
+      await this.prisma.notifications.create({
+        data: {
+          recipient_type: 'user',
+          recipient_id: voucher.received_by_user_id,
+          title: 'Rent handover paid',
+          message: `Caretaker ne Rs. ${voucher.total_amount.toString()} ka handover paid mark kar diya (screenshot attached).`,
+          notification_type: 'remittance_paid',
+          status: 'sent',
+          sent_at: new Date(),
+        },
+      });
+    }
+    return response('Voucher marked paid successfully', updated);
   }
 
   async payRentInvoice(id: string, body: unknown, user?: AuthUser) {
@@ -1342,6 +1587,7 @@ export class BaseService {
       });
       return payment;
     });
+    await this.writeAudit({ user, action: 'pay-rent', entityType: 'rent-invoices', entityId: paid.rent_invoice_id, newValues: { payment_id: paid.id, amount: paid.amount, payment_date: paid.payment_date, receipt_no: paid.receipt_no } });
     return response('Rent payment recorded successfully', paid);
   }
 
@@ -1372,6 +1618,7 @@ export class BaseService {
       });
       return created;
     });
+    await this.writeAudit({ user, action: 'pay-utility', entityType: 'utility-bills', entityId: payment.utility_bill_id, newValues: { payment_id: payment.id, amount: payment.amount, payment_date: payment.payment_date, receipt_no: payment.receipt_no } });
     return response('Utility payment recorded successfully', payment);
   }
 
@@ -1461,6 +1708,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ user, action: 'verify-document', entityType: 'documents', entityId: document.id, newValues: { status: document.status, remarks: document.remarks } });
     return response('Document verified successfully', document);
   }
 
@@ -1499,6 +1747,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ user, action: 'upload-document', entityType: 'documents', entityId: document.id, newValues: { document_type_id: document.document_type_id, owner_type: document.owner_type, owner_id: document.owner_id, original_file_name: document.original_file_name } });
     return response('Document uploaded successfully', document);
   }
 
@@ -1537,6 +1786,7 @@ export class BaseService {
       }
       return updated;
     });
+    await this.writeAudit({ user, action: 'reject-document', entityType: 'documents', entityId: document.id, newValues: { status: document.status, rejection_reason: document.rejection_reason } });
     return response('Document rejected successfully', document);
   }
 
@@ -1546,6 +1796,7 @@ export class BaseService {
     const document = await this.prisma.$transaction((tx) =>
       tx.documents.update({ where: { id: parseId(id) }, data: { visibility: data.visibility as never } }),
     );
+    await this.writeAudit({ action: 'update-document-visibility', entityType: 'documents', entityId: document.id, newValues: { visibility: document.visibility } });
     return response('Document visibility updated successfully', document);
   }
 
@@ -1594,6 +1845,7 @@ export class BaseService {
       });
       return updated;
     });
+    await this.writeAudit({ user, action: 'assign-complaint', entityType: 'complaints', entityId: complaint.id, newValues: { status: complaint.status, assigned_caretaker_id: complaint.assigned_caretaker_id } });
     return response('Complaint assigned successfully', complaint);
   }
 
@@ -1602,6 +1854,7 @@ export class BaseService {
     const complaint = await this.prisma.$transaction((tx) =>
       tx.complaints.update({ where: { id: parseId(id) }, data: { status: mapped } }),
     );
+    await this.writeAudit({ action: `complaint-${status}`, entityType: 'complaints', entityId: complaint.id, newValues: { status: complaint.status } });
     return response(`Complaint ${status} successfully`, complaint);
   }
 
@@ -1609,6 +1862,9 @@ export class BaseService {
   // standing at the complaint's pinned location. The current GPS must be within
   // the complaint's allowed radius of where the issue was reported.
   async resolveComplaintWithProof(id: string, body: unknown, user?: AuthUser) {
+    // Only the on-ground caretaker verifies that the work is done. Works wing /
+    // AD colony only see the complaint and (later) the uploaded proof.
+    this.requireRole(user, 'verify a complaint as done', ROLES.careTakerLabourColony);
     const data = coerceData(body);
     const complaint = await this.prisma.complaints.findUnique({ where: { id: parseId(id) } });
     if (!complaint) throw new NotFoundException('Complaint not found');
@@ -1651,6 +1907,7 @@ export class BaseService {
         },
       }),
     );
+    await this.writeAudit({ user, action: 'resolve-complaint', entityType: 'complaints', entityId: updated.id, newValues: { status: updated.status, resolved_distance_meters: updated.resolved_distance_meters, resolution_remarks: updated.resolution_remarks } });
     return response('Complaint verified and resolved successfully', updated);
   }
 
@@ -1666,6 +1923,7 @@ export class BaseService {
       });
       return created;
     });
+    await this.writeAudit({ action: 'asset-status-change', entityType: 'assets', entityId: history.asset_id, newValues: { status: history.status, asset_status_history_id: history.id } });
     return response('Asset status saved successfully', history);
   }
 
@@ -1681,6 +1939,7 @@ export class BaseService {
         login_longitude: (data.login_longitude ?? data.longitude) as never,
       },
     });
+    await this.writeAudit({ user, action: 'attendance-login', entityType: 'caretaker-attendance', entityId: attendance.id, newValues: { user_id: attendance.user_id, duty_date: attendance.duty_date, login_time: attendance.login_time } });
     return response('Caretaker attendance started successfully', attendance);
   }
 
@@ -1695,6 +1954,7 @@ export class BaseService {
         status: 'completed',
       },
     });
+    await this.writeAudit({ action: 'attendance-logout', entityType: 'caretaker-attendance', entityId: attendance.id, newValues: { logout_time: attendance.logout_time, status: attendance.status } });
     return response('Caretaker attendance completed successfully', attendance);
   }
 
@@ -1731,6 +1991,7 @@ export class BaseService {
     const task = await this.prisma.$transaction((tx) =>
       tx.caretaker_tasks.update({ where: { id: parseId(id) }, data: { status } }),
     );
+    await this.writeAudit({ action: `task-${status}`, entityType: 'caretaker-tasks', entityId: task.id, newValues: { status: task.status } });
     return response(`Task ${status} successfully`, task);
   }
 
@@ -1782,6 +2043,7 @@ export class BaseService {
       }
       return created;
     });
+    await this.writeAudit({ user, action: 'upload-task-proof', entityType: 'caretaker-tasks', entityId: task.id, newValues: { task_proof_id: proof.id, is_within_allowed_radius: proof.is_within_allowed_radius, distance_from_target_meters: proof.distance_from_target_meters } });
     return response('Task proof uploaded successfully', proof);
   }
 
@@ -1797,6 +2059,7 @@ export class BaseService {
       await tx.caretaker_tasks.update({ where: { id: proof.task_id }, data: { status: 'completed' } });
       return proof;
     });
+    await this.writeAudit({ action: 'approve-task-proof', entityType: 'caretaker-tasks', entityId: updated.task_id, newValues: { task_proof_id: updated.id, status: 'completed' } });
     return response('Task proof approved successfully', updated);
   }
 
@@ -1807,6 +2070,7 @@ export class BaseService {
       await tx.caretaker_tasks.update({ where: { id: proof.task_id }, data: { status: 'rejected' } });
       return proof;
     });
+    await this.writeAudit({ action: 'reject-task-proof', entityType: 'caretaker-tasks', entityId: updated.task_id, newValues: { task_proof_id: updated.id, status: 'rejected' } });
     return response('Task proof rejected successfully', updated);
   }
 

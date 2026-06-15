@@ -15,6 +15,12 @@ export class ResidentialUnitsController {
   create(@Body() body: unknown, @Req() req: { user?: unknown }) { return this.service.create('residential-units', body, req.user as never); }
   @Get(':id/history')
   history(@Param('id') id: string, @Query() query: Record<string, unknown>) { return this.service.related('residential-units', id, 'history', query); }
+  // Full occupancy timeline (every worker who ever lived here, with date ranges + names).
+  @Get(':id/occupancy')
+  occupancy(@Param('id') id: string) { return this.service.flatOccupancyHistory(id); }
+  // Point-in-time: who lived here on ?date=YYYY-MM-DD, ?month=YYYY-MM, or ?year=YYYY (defaults today).
+  @Get(':id/occupant')
+  occupant(@Param('id') id: string, @Query() query: Record<string, unknown>) { return this.service.flatOccupantOn(id, query); }
   @Get(':id')
   findOne(@Param('id') id: string) { return this.service.findOne('residential-units', id); }
   @Put(':id')

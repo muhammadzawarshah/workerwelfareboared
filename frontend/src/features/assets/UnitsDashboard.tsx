@@ -26,7 +26,9 @@ export function UnitsDashboard({
 }) {
   // The caretaker is view-only on flats — they see their colony's units but
   // cannot add or edit them.
-  const canManageFlats = role !== "care_taker_labour_colony";
+  // Flats are set up by colony section / AD (Colonies) / director only.
+  // Works wing and caretaker are view-only.
+  const canManageFlats = ["super_admin", "admin", "director_admin", "colony_section", "ad_colonies_zone1", "ad_colonies_zone2"].includes(role || "");
   const [flats, setFlats] = useSyncedState(initialFlats);
   const toast = useToast();
   const [saving, setSaving] = useState(false);

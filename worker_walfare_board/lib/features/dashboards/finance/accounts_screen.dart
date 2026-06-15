@@ -21,6 +21,25 @@ class _AccountsScreenState extends State<AccountsScreen> {
   bool _loading = true;
   String? _error;
 
+  // Report period filter (mirrors the website's monthly/quarterly/yearly).
+  String _period = 'all';
+  bool _inPeriod(String? bm) {
+    if (_period == 'all' || bm == null || bm.isEmpty) return true;
+    final d = DateTime.tryParse(bm);
+    if (d == null) return true;
+    final now = DateTime.now();
+    switch (_period) {
+      case 'year':
+        return d.year == now.year;
+      case 'month':
+        return d.year == now.year && d.month == now.month;
+      case 'quarter':
+        return d.year == now.year && ((d.month - 1) ~/ 3) == ((now.month - 1) ~/ 3);
+      default:
+        return true;
+    }
+  }
+
   List<RentInvoice> _rent = const [];
   List<Map<String, dynamic>> _rentPayments = const [];
   List<Map<String, dynamic>> _utilities = const [];
@@ -72,22 +91,24 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   Future<void> _collectRemittance(int caretakerId, String name, String amount) async {
+    final now = DateTime.now();
+    final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Collect Remittance'),
-        content: Text('$name se Rs. $amount cash collect (handover) confirm karein?'),
+        title: const Text('Generate Voucher'),
+        content: Text('$name ke liye $month ka handover voucher generate karein? Caretaker cash de kar screenshot lagayega.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Collect')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Generate')),
         ],
       ),
     );
     if (ok != true) return;
     try {
-      await _repo.collectRentRemittance(caretakerUserId: caretakerId);
+      await _repo.generateRemittanceVoucher(caretakerUserId: caretakerId, billingMonth: '$month-01');
       if (!mounted) return;
-      showToast(context, 'Remittance collect ho gayi.', success: true);
+      showToast(context, 'Voucher generate ho gaya — caretaker ko notify kar diya.', success: true);
       _load();
     } catch (e) {
       if (!mounted) return;
@@ -108,10 +129,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
       );
     }
 
-    final rentTotal = _rent.fold<num>(0, (s, r) => s + r.totalAmount);
-    final rentPaid = _rent.fold<num>(0, (s, r) => s + r.paidAmount);
+    final filteredRent = _rent.where((r) => _inPeriod(r.billingMonth)).toList();
+    final rentTotal = filteredRent.fold<num>(0, (s, r) => s + r.totalAmount);
+    final rentPaid = filteredRent.fold<num>(0, (s, r) => s + r.paidAmount);
     final rentDue = (rentTotal - rentPaid).clamp(0, double.infinity);
-    final rentCollected = _rentPayments.fold<num>(0, (s, p) => s + asDouble(p['amount']));
+    final rentCollected = rentPaid;
     final utilDue = _utilities
         .where((b) => !['paid', 'cancelled', 'not_generated'].contains(asStr(b['status'])))
         .fold<num>(0, (s, b) => s + asDouble(b['total_amount']));
@@ -128,6 +150,20 @@ class _AccountsScreenState extends State<AccountsScreen> {
             MetricCard(title: 'Utility Due', value: money(utilDue), tone: MetricTone.red, icon: Icons.bolt_outlined),
             MetricCard(title: 'Utility Paid', value: money(utilPaid), tone: MetricTone.purple, icon: Icons.receipt_outlined),
           ]),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            children: [
+              ['all', 'All Time'],
+              ['month', 'This Month'],
+              ['quarter', 'This Quarter'],
+              ['year', 'This Year'],
+            ].map((opt) => ChoiceChip(
+                  label: Text(opt[1]),
+                  selected: _period == opt[0],
+                  onSelected: (_) => setState(() => _period = opt[0]),
+                )).toList(),
+          ),
           const SizedBox(height: 14),
           SectionCard(
             title: 'Recent Rent Receipts',
@@ -174,7 +210,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
           const SizedBox(height: 14),
           SectionCard(
             title: 'Caretaker Collections (Pending Handover)',
-            subtitle: 'Har caretaker ke paas kitna cash hai — collect karein',
+            subtitle: 'Har caretaker ke paas kitna cash hai — voucher generate karein',
             child: _collectionSummary.isEmpty
                 ? const EmptyHint('Koi pending collection nahi.')
                 : Column(
@@ -196,7 +232,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                             FilledButton(
                               onPressed: () => _collectRemittance(id, name, amount),
                               style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), minimumSize: Size.zero),
-                              child: const Text('Collect'),
+                              child: const Text('Voucher'),
                             ),
                         ]),
                       );

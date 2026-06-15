@@ -24,6 +24,7 @@ import { LateFeeRulesDashboard } from "@/src/features/rent/LateFeeRulesDashboard
 import { ComplaintDashboard } from "@/src/features/complaints/ComplaintDashboard";
 import { CaretakerDutyDashboard } from "@/src/features/caretaker/CaretakerDutyDashboard";
 import { CaretakerAdminDashboard } from "@/src/features/caretaker/CaretakerAdminDashboard";
+import { CaretakerGpsDashboard } from "@/src/features/caretaker/CaretakerGpsDashboard";
 import { DocumentsDashboard } from "@/src/features/documents/DocumentsDashboard";
 import { DocumentTypesDashboard } from "@/src/features/documents/DocumentTypesDashboard";
 import { IndustriesDashboard } from "@/src/features/industries/IndustriesDashboard";
@@ -369,11 +370,14 @@ export function App() {
     if (active === "accounts")
       return (
         <AccountsDashboard
+          token={token}
           rent={data.rent}
           rentPayments={asArray<GenericRecord>(rentPayments.data)}
+          documents={asArray<GenericRecord>(documents.data)}
           utilities={asArray<UtilityBill>(utilities.data)}
           utilityPayments={asArray<GenericRecord>(utilityPayments.data)}
           workers={data.workers}
+          users={asArray<User>(users.data)}
           districts={asArray<GenericRecord>(districts.data)}
           colonies={asArray<GenericRecord>(colonies.data)}
           flats={asArray<Flat>(flats.data)}
@@ -465,7 +469,8 @@ export function App() {
           isRefreshing={evictionCases.loading || evictionHearings.loading || workers.loading || flats.loading || colonies.loading || documentTypes.loading}
         />
       );
-    if (active === "complaints") return <ComplaintDashboard complaints={data.complaints} workers={data.workers} token={token} colonies={allColonies} users={asArray<User>(users.data)} documentTypes={asArray<GenericRecord>(documentTypes.data)} onRefresh={complaints.refresh} isRefreshing={complaints.loading} />;
+    if (active === "complaints") return <ComplaintDashboard complaints={data.complaints} workers={data.workers} token={token} role={user?.role} colonies={allColonies} users={asArray<User>(users.data)} documentTypes={asArray<GenericRecord>(documentTypes.data)} onRefresh={complaints.refresh} isRefreshing={complaints.loading} />;
+    if (active === "caretakerGps") return <CaretakerGpsDashboard gps={asArray<GpsPing>(gps.data)} users={asArray<User>(users.data)} onRefresh={gps.refresh} isRefreshing={gps.loading} />;
     if (active === "assetsSetup")
       return (
         <AssetsAdminDashboard
@@ -588,7 +593,14 @@ export function App() {
       caretakerGps: asArray<GpsPing>(gps.data).map((item) => `GPS ${item.id} - ${item.latitude}, ${item.longitude}`),
       taskProofs: asArray<GenericRecord>(taskProofs.data).map((item) => recordLabel(item, `Task Proof ${item.id}`)),
       staff: asArray<User>(users.data).map((item) => `${item.name} - ${item.role}`),
-      notifications: asArray<GenericRecord>(notifications.data).map((item) => recordLabel(item, `Notification ${item.id}`)),
+      notifications: asArray<GenericRecord>(notifications.data).map((item) => {
+        const n = item as Record<string, unknown>;
+        const title = String(n.title || `Notification ${item.id}`);
+        const msg = n.message ? ` — ${String(n.message)}` : "";
+        const stamp = n.sent_at || n.created_at;
+        const when = stamp ? ` (${String(stamp).slice(0, 10)})` : "";
+        return `${title}${msg}${when}`;
+      }),
       auditLogs: asArray<GenericRecord>(auditLogs.data).map((item) => recordLabel(item, `Audit Log ${item.id}`)),
       reports: [
         `Workers Report - ${dashboard.data.workers} records`,

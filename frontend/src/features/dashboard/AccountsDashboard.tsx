@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import type { Flat, GenericRecord, RentInvoice, UtilityBill, Worker } from "@/src/types";
+import { useCallback, useEffect, useState } from "react";
+import type { Flat, GenericRecord, RentInvoice, UtilityBill, User, Worker } from "@/src/types";
+import { apiRequest, API_BASE } from "@/src/lib/api";
 import { money, statusLabel } from "@/src/lib/format";
+import { useToast } from "@/src/components/ui/ToastProvider";
 import { MetricCard } from "@/src/components/ui/MetricCard";
 import { StatusPill } from "@/src/components/ui/StatusPill";
 import { RefreshButton } from "@/src/components/ui/RefreshButton";
+
+type CollectionRow = { caretaker_user_id: number | null; caretaker?: { name?: string } | null; amount: string; payment_count: number };
 
 type ReportBasis = "monthly" | "quarterly" | "yearly";
 type Quarter = "Q1" | "Q2" | "Q3" | "Q4";
@@ -28,11 +32,14 @@ const MONTHS = [
 const YEARS = Array.from({ length: 8 }, (_, i) => String(now.getFullYear() - 5 + i));
 
 export function AccountsDashboard({
+  token,
   rent,
   rentPayments,
+  documents = [],
   utilities,
   utilityPayments,
   workers,
+  users = [],
   districts = [],
   colonies = [],
   flats = [],
@@ -40,11 +47,14 @@ export function AccountsDashboard({
   onRefresh,
   isRefreshing,
 }: {
+  token?: string;
   rent: RentInvoice[];
   rentPayments: GenericRecord[];
+  documents?: GenericRecord[];
   utilities: UtilityBill[];
   utilityPayments: GenericRecord[];
   workers: Worker[];
+  users?: User[];
   districts?: GenericRecord[];
   colonies?: GenericRecord[];
   flats?: Flat[];
@@ -52,6 +62,79 @@ export function AccountsDashboard({
   onRefresh?: () => void;
   isRefreshing?: boolean;
 }) {
+  const toast = useToast();
+  const [collections, setCollections] = useState<CollectionRow[]>([]);
+  const [vouchers, setVouchers] = useState<GenericRecord[]>([]);
+  const [voucherMonth, setVoucherMonth] = useState(`${DEFAULT_YEAR}-${DEFAULT_MONTH}`);
+  const [voucherCaretaker, setVoucherCaretaker] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const caretakerUsers = users.filter((u) => u.role === "care_taker_labour_colony");
+  const userName = (id?: number | null) => users.find((u) => u.id === Number(id))?.name || `Caretaker #${id}`;
+
+  const loadHandover = useCallback(async () => {
+    if (!token) return;
+    try {
+      const [summary, vlist] = await Promise.all([
+        apiRequest<CollectionRow[]>("/rent-collections/summary", token),
+        apiRequest<GenericRecord[]>("/rent-remittances", token),
+      ]);
+      setCollections(summary);
+      setVouchers(vlist);
+    } catch {
+      /* non-fatal: handover panel just stays empty */
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadHandover();
+  }, [loadHandover]);
+
+  async function generateVoucher() {
+    if (!voucherCaretaker) { toast("Pehle caretaker chunein.", "error"); return; }
+    setGenerating(true);
+    try {
+      await apiRequest("/rent-remittances", token, {
+        method: "POST",
+        body: JSON.stringify({ caretaker_user_id: Number(voucherCaretaker), billing_month: `${voucherMonth}-01` }),
+      });
+      toast("Voucher generate ho gaya — caretaker ko notify kar diya.", "success");
+      await loadHandover();
+      onRefresh?.();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Voucher generate failed.", "error");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function openVoucherProof(docId: number) {
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}/download`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error(await res.text());
+      const url = URL.createObjectURL(await res.blob());
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Proof open failed.", "error");
+    }
+  }
+
+  // Open the screenshot/proof attached to a rent payment (audit trail).
+  function proofForPayment(paymentId: number): GenericRecord | undefined {
+    return documents.find((d) => String(d.owner_type) === "rent_payment" && Number(d.owner_id) === paymentId);
+  }
+  async function openProof(doc: GenericRecord) {
+    try {
+      const res = await fetch(`${API_BASE}/documents/${doc.id}/download`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error(await res.text());
+      const url = URL.createObjectURL(await res.blob());
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Proof open failed.", "error");
+    }
+  }
+
   // view: "district" → district list, "colony" → colonies in a district, "detail" → workers in a colony
   const [view, setView] = useState<"district" | "colony" | "detail">("district");
   const [selectedDistrictId, setSelectedDistrictId] = useState<number | null>(null);
@@ -353,6 +436,52 @@ export function AccountsDashboard({
 
       {periodBar}
 
+      {/* Caretaker handover — collect each caretaker's pending cash */}
+      <section className="data-card">
+        <div className="card-title">
+          <div>
+            <h2>Caretaker Handover Vouchers</h2>
+            <p>Caretaker + month chunein → voucher generate karein. Caretaker pay karke screenshot lagayega.</p>
+          </div>
+        </div>
+        <div className="filter-bar" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          <select value={voucherCaretaker} onChange={(e) => setVoucherCaretaker(e.target.value)}>
+            <option value="">Select caretaker</option>
+            {caretakerUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+          <input type="month" value={voucherMonth} onChange={(e) => setVoucherMonth(e.target.value)} />
+          <button className="primary-button compact" disabled={generating} onClick={generateVoucher}>
+            {generating ? "Generating..." : "Generate Voucher"}
+          </button>
+        </div>
+        {/* Reference: cash each caretaker is still holding (un-vouchered) */}
+        {collections.length > 0 && (
+          <p className="muted-text" style={{ marginBottom: 10 }}>
+            Pending (un-vouchered): {collections.map((c) => `${c.caretaker?.name || `#${c.caretaker_user_id}`} ${money(c.amount)}`).join(" · ")}
+          </p>
+        )}
+        <table>
+          <thead>
+            <tr><th>Caretaker</th><th>Month</th><th>Amount</th><th>Status</th><th>Proof</th></tr>
+          </thead>
+          <tbody>
+            {vouchers.length === 0 ? <tr><td colSpan={5}>No vouchers yet.</td></tr> : null}
+            {vouchers.map((row) => {
+              const v = row as Record<string, unknown>;
+              return (
+                <tr key={String(v.id)}>
+                  <td>{userName(v.caretaker_user_id as number)}</td>
+                  <td>{String(v.billing_month || "").slice(0, 7) || "—"}</td>
+                  <td><strong>{money(v.total_amount as number)}</strong></td>
+                  <td><StatusPill status={String(v.status || "pending")} /></td>
+                  <td>{v.proof_document_id ? <button className="ghost-button compact" onClick={() => openVoucherProof(Number(v.proof_document_id))}>View</button> : <span className="muted-text">—</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
       {/* District-wise summary */}
       {districts.length > 0 && (
         <section className="data-card">
@@ -418,19 +547,21 @@ export function AccountsDashboard({
         <div className="data-card">
           <div className="card-title"><div><h2>Rent Receipts</h2><p>Latest rent payments received.</p></div></div>
           <table>
-            <thead><tr><th>Payment</th><th>Method</th><th>Amount</th><th>Date</th></tr></thead>
+            <thead><tr><th>Payment</th><th>Method</th><th>Amount</th><th>Date</th><th>Proof</th></tr></thead>
             <tbody>
               {recentRentPayments.length ? recentRentPayments.map((p) => {
                 const inv = rent.find((r) => r.id === Number(p.rent_invoice_id));
+                const proof = proofForPayment(Number(p.id));
                 return (
                   <tr key={p.id}>
                     <td><strong>{p.receipt_no || `Rent Payment #${p.id}`}</strong><br /><span>{workerName(inv?.worker_id)}</span></td>
                     <td><span className="soft-tag">{statusLabel(p.payment_method || "manual")}</span></td>
                     <td>{money(p.amount)}</td>
                     <td>{p.payment_date?.slice(0, 10) || p.created_at?.slice(0, 10) || "—"}</td>
+                    <td>{proof ? <button className="ghost-button compact" onClick={() => openProof(proof)}>View</button> : <span className="muted-text">—</span>}</td>
                   </tr>
                 );
-              }) : <tr><td colSpan={4}>No rent payments found.</td></tr>}
+              }) : <tr><td colSpan={5}>No rent payments found.</td></tr>}
             </tbody>
           </table>
         </div>

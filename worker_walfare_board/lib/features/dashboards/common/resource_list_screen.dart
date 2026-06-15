@@ -145,7 +145,12 @@ class ResourceLists {
         fetch: _repo.notifications,
         leading: Icons.notifications_outlined,
         titleOf: (r) => asStr(r['title'], 'Notification ${asStr(r['id'])}'),
-        subtitleOf: (r) => asStr(r['message']),
+        subtitleOf: (r) {
+          final msg = asStr(r['message']);
+          final stamp = r['sent_at'] ?? r['created_at'];
+          final when = stamp == null ? '' : ' · ${shortDateOf(stamp)}';
+          return '$msg$when';
+        },
         statusOf: (r) => asStrN(r['status']),
       );
 
@@ -164,8 +169,14 @@ class ResourceLists {
         subtitle: 'Location pings',
         fetch: _repo.caretakerGps,
         leading: Icons.location_on_outlined,
-        titleOf: (r) => 'GPS #${asStr(r['id'])}',
-        subtitleOf: (r) => '${asStr(r['latitude'])}, ${asStr(r['longitude'])} · ${asStr(r['recorded_at']).replaceAll('T', ' ')}',
+        titleOf: (r) => 'Caretaker #${asStr(r['user_id'])}',
+        subtitleOf: (r) {
+          final lat = double.tryParse(asStr(r['latitude']));
+          final lng = double.tryParse(asStr(r['longitude']));
+          final coords = lat != null && lng != null ? '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}' : '${asStr(r['latitude'])}, ${asStr(r['longitude'])}';
+          final at = asStr(r['recorded_at']);
+          return '$coords · ${at.length >= 16 ? at.substring(0, 16).replaceAll('T', ' ') : at}';
+        },
       );
 
   static Widget taskProofs() => ResourceListScreen(

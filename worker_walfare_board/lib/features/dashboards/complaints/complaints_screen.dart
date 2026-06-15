@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/auth/auth_store.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/json_parse.dart';
 import '../../../core/utils/location_helper.dart';
@@ -22,6 +23,12 @@ class ComplaintsScreen extends StatefulWidget {
 
 class _ComplaintsScreenState extends State<ComplaintsScreen> {
   final _repo = ApiRepository.instance;
+  final _role = AuthStore.instance.user?.role ?? '';
+
+  // Only the caretaker verifies "done"; only management / colony section dispatch
+  // (forward). Works wing is view-only here.
+  bool get _isCaretaker => _role == 'care_taker_labour_colony';
+  bool get _canDispatch => ['super_admin', 'admin', 'director_admin', 'colony_section'].contains(_role);
 
   bool _loading = true;
   String? _error;
@@ -279,17 +286,20 @@ class _ComplaintsScreenState extends State<ComplaintsScreen> {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               if (!done) ...[
-                OutlinedButton(
-                  onPressed: () => _forward(c),
-                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), minimumSize: Size.zero),
-                  child: const Text('Forward'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () => _verifyDone(c),
-                  style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), minimumSize: Size.zero, backgroundColor: AppColors.success),
-                  child: const Text('Verify Done'),
-                ),
+                if (_canDispatch) ...[
+                  OutlinedButton(
+                    onPressed: () => _forward(c),
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), minimumSize: Size.zero),
+                    child: const Text('Forward'),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                if (_isCaretaker)
+                  FilledButton(
+                    onPressed: () => _verifyDone(c),
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), minimumSize: Size.zero, backgroundColor: AppColors.success),
+                    child: const Text('Verify Done'),
+                  ),
               ],
             ],
           ),

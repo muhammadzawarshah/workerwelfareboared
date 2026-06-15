@@ -7,7 +7,7 @@ import { NotificationsService } from './notifications.service';
 @UseGuards(NotificationsGuard)
 export class NotificationsController {
   constructor(private readonly service: NotificationsService) {}
-  @Get() list(@Query() q: ListQueryDto) { return this.service.list('notifications', q as Record<string, unknown>); }
+  @Get() list(@Query() q: ListQueryDto, @Req() req: { user?: unknown }) { return this.service.list('notifications', q as Record<string, unknown>, req.user as never); }
   @Post() create(@Body() b: unknown) { return this.service.create('notifications', b); }
   @Patch('read-all') readAll(@Req() req: { user?: unknown }) { return this.service.markAllNotificationsRead(req.user as never); }
   @Get(':id') findOne(@Param('id') id: string) { return this.service.findOne('notifications', id); }

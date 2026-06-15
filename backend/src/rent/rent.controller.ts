@@ -38,7 +38,8 @@ export class RentController {
   @Get('rent-collections/summary') collectionSummary(@Query() q: Record<string, unknown>) { return this.service.caretakerCollectionSummary(q); }
   @Get('rent-collections/by-worker') collectionByWorker(@Query() q: Record<string, unknown>) { return this.service.rentCollectionByWorker(q); }
   @Get('rent-collections/by-colony') collectionByColony(@Query() q: Record<string, unknown>) { return this.service.rentCollectionByColony(q); }
-  @Get('rent-remittances') listRemittances(@Query() q: ListQueryDto) { return this.service.list('rent-remittances', q as Record<string, unknown>); }
-  @Post('rent-remittances') collectRemittance(@Body() b: unknown, @Req() req: { user?: unknown }) { return this.service.collectRentRemittance(b, req.user as never); }
+  @Get('rent-remittances') listRemittances(@Query() q: ListQueryDto, @Req() req: { user?: unknown }) { return this.service.list('rent-remittances', q as Record<string, unknown>, req.user as never); }
+  @Post('rent-remittances') generateVoucher(@Body() b: unknown, @Req() req: { user?: unknown }) { return this.service.generateRemittanceVoucher(b, req.user as never); }
+  @Post('rent-remittances/:id/pay') payVoucher(@Param('id') id: string, @Body() b: unknown, @Req() req: { user?: unknown }) { return this.service.payRemittanceVoucher(id, b, req.user as never); }
   @Get('rent-remittances/:id') getRemittance(@Param('id') id: string) { return this.service.findOne('rent-remittances', id); }
 }

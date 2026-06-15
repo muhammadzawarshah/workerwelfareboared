@@ -32,6 +32,7 @@ class _RentScreenState extends State<RentScreen> {
   Map<int, Worker> _workers = const {};
   List<Map<String, dynamic>> _docTypes = const [];
   List<Map<String, dynamic>> _myPending = const [];
+  List<Map<String, dynamic>> _vouchers = const [];
   String _query = '';
 
   // Generation is the accountant's job — the caretaker only collects.
@@ -62,12 +63,14 @@ class _RentScreenState extends State<RentScreen> {
         _repo.workers(),
         _repo.documentTypes(),
         if (_isCaretaker) _repo.myPendingCollection() else Future.value(<Map<String, dynamic>>[]),
+        if (_isCaretaker) _repo.rentRemittances() else Future.value(<Map<String, dynamic>>[]),
       ]);
       setState(() {
         _rent = results[0].map((e) => RentInvoice(e)).toList();
         _workers = {for (final w in results[1].map((e) => Worker(e))) w.id: w};
         _docTypes = results[2];
         _myPending = results[3];
+        _vouchers = results[4];
         _loading = false;
       });
     } catch (e) {
@@ -84,6 +87,36 @@ class _RentScreenState extends State<RentScreen> {
       if (terms.any((term) => hay.contains(term))) return asIntN(t['id']);
     }
     return null;
+  }
+
+  // Caretaker pays a handover voucher: pick a screenshot, upload it, mark paid.
+  Future<void> _payVoucher(Map<String, dynamic> v) async {
+    final picked = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = picked?.files.single.path;
+    if (path == null) return;
+    final docTypeId = _findDocTypeId(['rent payment proof', 'payment proof', 'receipt', 'proof']);
+    if (!mounted) return;
+    if (docTypeId == null) {
+      showToast(context, 'Proof document type missing — pehle banayein.', error: true);
+      return;
+    }
+    try {
+      final doc = await _repo.uploadDocument(
+        file: File(path),
+        documentTypeId: docTypeId,
+        ownerType: 'rent_payment',
+        ownerId: asIntN(v['id']),
+        visibility: 'finance',
+        remarks: 'Handover screenshot for voucher #${asStr(v['id'])}',
+      );
+      await _repo.payRemittanceVoucher(asInt(v['id']), imageDocumentId: asIntN(doc['id']) ?? 0);
+      if (!mounted) return;
+      showToast(context, 'Voucher paid mark ho gaya — accountant ko notify kar diya.', success: true);
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      showToast(context, e.toString(), error: true);
+    }
   }
 
   Future<void> _collect(RentInvoice inv) async {
@@ -208,6 +241,44 @@ class _RentScreenState extends State<RentScreen> {
               );
             }),
             const SizedBox(height: 14),
+            if (_vouchers.isNotEmpty) ...[
+              SectionCard(
+                title: 'Handover Vouchers',
+                subtitle: 'Accountant ke voucher — cash de kar screenshot upload karein',
+                child: Column(
+                  children: _vouchers.map((v) {
+                    final paid = asStr(v['status']) == 'paid';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: AppColors.surfaceMuted, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border)),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(money(v['total_amount']), style: const TextStyle(fontWeight: FontWeight.bold)),
+                                Text('${asStr(v['billing_month']).split('T').first} · ${asStr(v['payment_count'], '0')} payments', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                              ],
+                            ),
+                          ),
+                          if (paid)
+                            const Text('Paid ✓', style: TextStyle(color: AppColors.success, fontWeight: FontWeight.w600))
+                          else
+                            FilledButton(
+                              onPressed: () => _payVoucher(v),
+                              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), minimumSize: Size.zero),
+                              child: const Text('Pay + Screenshot'),
+                            ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              const SizedBox(height: 14),
+            ],
           ],
           SectionCard(
             title: 'Rent Collection Register',

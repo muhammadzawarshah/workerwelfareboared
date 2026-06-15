@@ -444,9 +444,11 @@ model rent_remittances {
   id                                              Int             @id @default(autoincrement())
   caretaker_user_id                               Int
   received_by_user_id                             Int?
+  billing_month                                   DateTime?       @db.Date
+  proof_document_id                               Int?
   total_amount                                    BigInt          @default(0)
   payment_count                                   Int             @default(0)
-  status                                          String          @default("received") @db.VarChar(20)
+  status                                          String          @default("pending") @db.VarChar(20)
   remarks                                         String?         @db.VarChar(500)
   received_at                                     DateTime?       @db.Timestamp(6)
   created_at                                      DateTime?       @default(now()) @db.Timestamp(6)

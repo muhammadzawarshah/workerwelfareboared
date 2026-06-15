@@ -186,9 +186,19 @@ class ApiRepository {
   // Caretaker: rent collected but not yet handed to the accountant.
   Future<List<Map<String, dynamic>>> myPendingCollection() => list('/rent-collections/my-pending');
   Future<List<Map<String, dynamic>>> rentRemittances() => list('/rent-remittances');
-  // Accountant collects a caretaker's un-remitted cash.
-  Future<dynamic> collectRentRemittance({required int caretakerUserId, String? remarks}) =>
-      _api.post('/rent-remittances', body: {'caretaker_user_id': caretakerUserId, if (remarks != null) 'remarks': remarks});
+  // Accountant generates a monthly handover voucher for a caretaker.
+  Future<dynamic> generateRemittanceVoucher({required int caretakerUserId, required String billingMonth, String? remarks}) =>
+      _api.post('/rent-remittances', body: {
+        'caretaker_user_id': caretakerUserId,
+        'billing_month': billingMonth,
+        if (remarks != null) 'remarks': remarks,
+      });
+  // Caretaker pays a voucher: uploads a handover screenshot and marks it paid.
+  Future<dynamic> payRemittanceVoucher(int id, {required int imageDocumentId, String? remarks}) =>
+      _api.post('/rent-remittances/$id/pay', body: {
+        'image_document_id': imageDocumentId,
+        if (remarks != null) 'remarks': remarks,
+      });
 
   // ── Complaints ───────────────────────────────────────────────────────────────
   Future<Map<String, dynamic>> createComplaint(Map<String, dynamic> body) async {
